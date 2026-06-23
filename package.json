@@ -1,0 +1,19 @@
+{
+  "name": "muyang-vibe-core",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -b",
+    "check": "npm run typecheck",
+    "dev:sticker-api": "npm --workspace @muyang/live-sticker-api run dev",
+    "start:sticker-api": "npm --workspace @muyang/live-sticker-api run start"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}
