@@ -1,0 +1,18 @@
+[Unit]
+Description=Muyang Live Sticker Core API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/muyang-vibe-core/services/live-sticker-api
+EnvironmentFile=/etc/muyang/live-sticker-api.env
+ExecStart=/usr/bin/node src/server.mjs
+Restart=always
+RestartSec=5
+User=muyang
+Group=muyang
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

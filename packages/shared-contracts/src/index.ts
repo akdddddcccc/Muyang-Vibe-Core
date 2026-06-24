@@ -1,6 +1,7 @@
 export type StickerAssetKind =
   | "reference"
   | "font-reference"
+  | "layout-reference"
   | "top"
   | "bottom"
   | "side"
@@ -36,12 +37,39 @@ export interface TextLayerInput {
   text: string;
   colorReferenceAssetId?: string;
   fontReferenceAssetId?: string;
+  layoutReferenceAssetId?: string;
 }
 
 export type TypographyPresetKey = "elegant-songti" | "expressive-calligraphy" | "rounded-cute" | "custom-reference";
 
 export interface TypographySettings {
   fontPresetKey: TypographyPresetKey;
+  text: string;
+}
+
+export interface TypographyReferenceInput {
+  assetId?: string;
+  mimeType?: string;
+  dataUrl?: string;
+}
+
+export interface TypographyGenerationRequest {
+  text: string;
+  fontPresetKey: TypographyPresetKey;
+  references?: {
+    color?: TypographyReferenceInput;
+    font?: TypographyReferenceInput;
+    layout?: TypographyReferenceInput;
+  };
+}
+
+export interface TypographyGenerationJob {
+  id: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  createdAt: string;
+  input: TypographyGenerationRequest;
+  result?: StickerAsset;
+  error?: { code: string; message: string };
 }
 
 export type CompositionLayerKind = "base-image" | "top" | "bottom" | "side" | "typography";
