@@ -41,10 +41,15 @@ export interface TextLayerInput {
 }
 
 export type TypographyPresetKey = "elegant-songti" | "expressive-calligraphy" | "rounded-cute" | "custom-reference";
+export type TypographyGenerationMode = "create" | "refine";
+export type TypographyMatte = "white" | "black";
 
 export interface TypographySettings {
   fontPresetKey: TypographyPresetKey;
   text: string;
+  instruction: string;
+  mode: TypographyGenerationMode;
+  matte: TypographyMatte;
 }
 
 export interface TypographyReferenceInput {
@@ -56,10 +61,14 @@ export interface TypographyReferenceInput {
 export interface TypographyGenerationRequest {
   text: string;
   fontPresetKey: TypographyPresetKey;
+  mode: TypographyGenerationMode;
+  matte: TypographyMatte;
+  instruction?: string;
   references?: {
     color?: TypographyReferenceInput;
     font?: TypographyReferenceInput;
     layout?: TypographyReferenceInput;
+    typography?: TypographyReferenceInput;
   };
 }
 

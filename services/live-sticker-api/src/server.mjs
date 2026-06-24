@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 const host = process.env.CORE_HOST ?? "127.0.0.1";
 const port = Number(process.env.CORE_PORT ?? 8787);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "*").split(",").map((origin) => origin.trim()).filter(Boolean);
-const typographyAdapterUrl = process.env.TYPOGRAPHY_ADAPTER_URL?.replace(/\/$/, "");
-const typographyAdapterToken = process.env.TYPOGRAPHY_ADAPTER_TOKEN;
+const typographyAdapterUrl = (process.env.OFOX_TYPOGRAPHY_ADAPTER_URL ?? process.env.TYPOGRAPHY_ADAPTER_URL)?.replace(/\/$/, "");
+const typographyAdapterToken = process.env.OFOX_TYPOGRAPHY_ADAPTER_TOKEN ?? process.env.TYPOGRAPHY_ADAPTER_TOKEN;
 const jobs = new Map();
 const typographyPresetKeys = new Set(["elegant-songti", "expressive-calligraphy", "rounded-cute", "custom-reference"]);
 
@@ -66,16 +66,23 @@ function normalizeReference(value) {
 function validateTypographyRequest(payload) {
   const text = typeof payload.text === "string" ? payload.text.trim() : "";
   const fontPresetKey = typeof payload.fontPresetKey === "string" ? payload.fontPresetKey : "elegant-songti";
+  const mode = payload.mode === "refine" ? "refine" : "create";
+  const matte = payload.matte === "black" ? "black" : "white";
+  const instruction = typeof payload.instruction === "string" ? payload.instruction.trim() : "";
   const references = {
     color: normalizeReference(payload.references?.color),
     font: normalizeReference(payload.references?.font),
     layout: normalizeReference(payload.references?.layout),
+    typography: normalizeReference(payload.references?.typography),
   };
 
-  if (!text && !references.layout) return { error: "请填写文本内容，或提供带布局的文本参考图。" };
+  if (mode === "create" && !text && !references.layout) return { error: "请填写文本内容，或提供带布局的文本参考图。" };
+  if (mode === "refine" && !text) return { error: "微调已有文字图层时请填写新的文本内容。" };
+  if (mode === "refine" && !references.typography) return { error: "微调已有文字图层时请提供文字图层参考。" };
   if (text.length > 240) return { error: "文本内容不能超过 240 个字符。" };
+  if (instruction.length > 480) return { error: "定制化要求不能超过 480 个字符。" };
   if (!typographyPresetKeys.has(fontPresetKey)) return { error: "fontPresetKey 无效。" };
-  return { value: { text, fontPresetKey, references } };
+  return { value: { text, fontPresetKey, mode, matte, instruction: instruction || undefined, references } };
 }
 
 async function createTypographyJob(input) {
@@ -86,7 +93,7 @@ async function createTypographyJob(input) {
     job.status = "failed";
     job.error = {
       code: "provider_not_configured",
-      message: "未配置文字图层 Provider Adapter。请在 Core 服务端设置 TYPOGRAPHY_ADAPTER_URL。",
+      message: "未配置 OFOX 文字图层 Adapter。请在 Core 服务端设置 OFOX_TYPOGRAPHY_ADAPTER_URL。",
     };
     return job;
   }
@@ -128,6 +135,7 @@ const server = createServer(async (request, response) => {
         imageGeneration: "not-configured",
         taskPlanning: "not-configured",
         typographyGeneration: typographyAdapterUrl ? "ready" : "not-configured",
+        typographyProvider: "ofox",
       },
     });
   }
