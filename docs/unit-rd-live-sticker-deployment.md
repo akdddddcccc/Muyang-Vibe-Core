@@ -1,5 +1,7 @@
 # 直播贴片 Core 部署与单位研发对接
 
+完整产品、交互与联调边界见 [unit-rd-live-sticker-handoff.md](./unit-rd-live-sticker-handoff.md)。本文聚焦部署命令与 Adapter HTTP 契约。
+
 ## 交付范围
 
 服务目录：`services/live-sticker-api`
