@@ -41,13 +41,21 @@ VITE_CORE_API_BASE_URL=https://api.tool.company.example
 CORE_HOST=0.0.0.0
 CORE_PORT=8787
 CORS_ORIGIN=https://cmuyang23333.top,https://tool.company.example
-OFOX_TYPOGRAPHY_ADAPTER_URL=https://ofox-adapter.company.example/v1/typography/generate
-OFOX_TYPOGRAPHY_ADAPTER_TOKEN=server-side-secret
+OFOX_API_KEY=server-side-secret
+OFOX_BASE_URL=https://api.ofox.ai/v1
+OFOX_IMAGE_MODEL=openai/gpt-image-2
+OFOX_IMAGE_QUALITY=low
+OFOX_TEXT_LAYER_SIZE=1536x1024
+
+# Optional only when the unit runs a separate normalized Adapter:
+OFOX_TYPOGRAPHY_ADAPTER_URL=
+OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 ```
 
 - Key 只放在 Adapter 的受保护环境变量中，不进入浏览器、Git、Vercel 日志或 Core 响应。
-- `OFOX_TYPOGRAPHY_ADAPTER_URL` 未配置时，Core 对文字任务返回 `503 provider_not_configured`，这是可读的预期状态。
-- 旧的 `TYPOGRAPHY_ADAPTER_*` 仅保留本地迁移兼容，正式部署请只配置 `OFOX_TYPOGRAPHY_ADAPTER_*`。
+- 最小部署可以直接使用 Core 内置 OFOX Adapter：设置 `OFOX_API_KEY`、`OFOX_BASE_URL=https://api.ofox.ai/v1`、`OFOX_IMAGE_MODEL=openai/gpt-image-2`、`OFOX_TEXT_LAYER_SIZE=1536x1024`。
+- 若单位另有独立 Adapter，再设置 `OFOX_TYPOGRAPHY_ADAPTER_URL` 与内部 Token；不要把 OFOX 原始 `/v1` Base URL 填入这个变量。
+- 两种方式都未配置时，Core 对文字任务返回 `503 provider_not_configured`。
 
 ## 5. 核心接口
 

@@ -36,11 +36,18 @@
 CORE_HOST=0.0.0.0
 CORE_PORT=8787
 CORS_ORIGIN=https://cmuyang23333.top,https://tool.company.example
-OFOX_TYPOGRAPHY_ADAPTER_URL=https://ofox-adapter.company.example/v1/typography/generate
-OFOX_TYPOGRAPHY_ADAPTER_TOKEN=replace-with-server-side-secret
+OFOX_API_KEY=replace-with-server-side-secret
+OFOX_BASE_URL=https://api.ofox.ai/v1
+OFOX_IMAGE_MODEL=openai/gpt-image-2
+OFOX_IMAGE_QUALITY=low
+OFOX_TEXT_LAYER_SIZE=1536x1024
+
+# Optional external normalized Adapter:
+OFOX_TYPOGRAPHY_ADAPTER_URL=
+OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 ```
 
-`OFOX_TYPOGRAPHY_ADAPTER_URL` 未设置时，Core 返回 `503 provider_not_configured`。这是预期的安全行为，不是前端故障。
+最小部署可不设外部 Adapter，改为设置 `OFOX_API_KEY`、`OFOX_BASE_URL=https://api.ofox.ai/v1`、`OFOX_IMAGE_MODEL=openai/gpt-image-2` 与 `OFOX_TEXT_LAYER_SIZE=1536x1024`，由 Core 内置 Adapter 直接生成文字层。只有单位独立部署了归一化 Adapter 时才设置 `OFOX_TYPOGRAPHY_ADAPTER_URL`；不得把 OFOX 原始 Base URL 填入该变量。两种路径都未配置时，Core 返回 `503 provider_not_configured`。
 
 ## Provider Adapter 契约
 

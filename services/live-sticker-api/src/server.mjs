@@ -6,6 +6,11 @@ const port = Number(process.env.CORE_PORT ?? 8787);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "*").split(",").map((origin) => origin.trim()).filter(Boolean);
 const typographyAdapterUrl = (process.env.OFOX_TYPOGRAPHY_ADAPTER_URL ?? process.env.TYPOGRAPHY_ADAPTER_URL)?.replace(/\/$/, "");
 const typographyAdapterToken = process.env.OFOX_TYPOGRAPHY_ADAPTER_TOKEN ?? process.env.TYPOGRAPHY_ADAPTER_TOKEN;
+const ofoxApiKey = process.env.OFOX_API_KEY;
+const ofoxBaseUrl = (process.env.OFOX_BASE_URL ?? "https://api.ofox.ai/v1").replace(/\/$/, "");
+const ofoxImageModel = process.env.OFOX_IMAGE_MODEL ?? "openai/gpt-image-2";
+const ofoxImageQuality = process.env.OFOX_IMAGE_QUALITY ?? "low";
+const ofoxTextLayerSize = process.env.OFOX_TEXT_LAYER_SIZE ?? "1536x1024";
 const jobs = new Map();
 const typographyPresetKeys = new Set(["elegant-songti", "expressive-calligraphy", "rounded-cute", "custom-reference"]);
 
@@ -85,32 +90,102 @@ function validateTypographyRequest(payload) {
   return { value: { text, fontPresetKey, mode, matte, instruction: instruction || undefined, references } };
 }
 
+function isRawOfoxUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.hostname.endsWith("ofox.ai") || url.hostname.endsWith("ofox.io");
+  } catch {
+    return false;
+  }
+}
+
+const externalTypographyAdapterUrl = typographyAdapterUrl && !isRawOfoxUrl(typographyAdapterUrl)
+  ? typographyAdapterUrl
+  : undefined;
+
+function typographyPrompt(input) {
+  const matte = input.matte === "black" ? "pure black (#000000)" : "pure white (#FFFFFF)";
+  return [
+    "Create a clean Chinese display typography layer for a livestream sticker design.",
+    `Render exactly this text, preserving line breaks:\n${input.text}`,
+    input.instruction ? `Additional art direction: ${input.instruction}` : "",
+    `Use a ${matte} solid background with no gradients, shadows, photographs, mockups or unrelated objects.`,
+    "Keep all lettering fully inside the canvas with generous margins. Do not add any words that are not in the supplied text.",
+  ].filter(Boolean).join("\n\n");
+}
+
+async function requestBuiltInOfoxTypography(jobId, input) {
+  const response = await fetch(`${ofoxBaseUrl}/images/generations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ofoxApiKey}`,
+      "Content-Type": "application/json",
+      "X-Request-Id": jobId,
+    },
+    body: JSON.stringify({
+      model: ofoxImageModel,
+      prompt: typographyPrompt(input),
+      size: ofoxTextLayerSize,
+      quality: ofoxImageQuality,
+      output_format: "png",
+    }),
+    signal: AbortSignal.timeout(180_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error?.message || payload.message || `OFOX returned ${response.status}.`);
+  const image = payload.data?.[0];
+  if (!image?.b64_json && !image?.url) throw new Error("OFOX response did not include an image.");
+  const bytes = image.b64_json ? Buffer.from(image.b64_json, "base64") : undefined;
+  return {
+    status: "completed",
+    result: {
+      id: randomUUID(),
+      kind: "typography",
+      format: "png",
+      source: "generated",
+      fileName: `typography-${jobId.slice(0, 8)}.png`,
+      mimeType: "image/png",
+      sizeBytes: bytes?.length ?? 0,
+      url: image.b64_json ? `data:image/png;base64,${image.b64_json}` : image.url,
+      createdAt: new Date().toISOString(),
+    },
+  };
+}
+
+async function requestExternalTypographyAdapter(jobId, input) {
+  const response = await fetch(externalTypographyAdapterUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(typographyAdapterToken ? { Authorization: `Bearer ${typographyAdapterToken}` } : {}),
+    },
+    body: JSON.stringify({ jobId, input }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || `Adapter returned ${response.status}.`);
+  return payload;
+}
+
 async function createTypographyJob(input) {
   const job = { id: randomUUID(), status: "queued", createdAt: new Date().toISOString(), input };
   jobs.set(job.id, job);
 
-  if (!typographyAdapterUrl) {
+  if (!externalTypographyAdapterUrl && !ofoxApiKey) {
     job.status = "failed";
     job.error = {
       code: "provider_not_configured",
-      message: "未配置 OFOX 文字图层 Adapter。请在 Core 服务端设置 OFOX_TYPOGRAPHY_ADAPTER_URL。",
+      message: "未配置 OFOX。请设置 OFOX_API_KEY，或配置独立的 OFOX_TYPOGRAPHY_ADAPTER_URL。",
     };
     return job;
   }
 
   job.status = "processing";
   try {
-    const adapterResponse = await fetch(typographyAdapterUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(typographyAdapterToken ? { Authorization: `Bearer ${typographyAdapterToken}` } : {}),
-      },
-      body: JSON.stringify({ jobId: job.id, input }),
-      signal: AbortSignal.timeout(90_000),
-    });
-    const adapterPayload = await adapterResponse.json().catch(() => ({}));
-    if (!adapterResponse.ok) throw new Error(adapterPayload.message || `Adapter returned ${adapterResponse.status}.`);
+    const adapterPayload = externalTypographyAdapterUrl
+      ? await requestExternalTypographyAdapter(job.id, input)
+      : await requestBuiltInOfoxTypography(job.id, input);
     job.status = adapterPayload.status === "queued" ? "queued" : "completed";
     job.result = adapterPayload.result;
   } catch (error) {
@@ -129,13 +204,14 @@ const server = createServer(async (request, response) => {
       status: "ok",
       service: "live-sticker-api",
       mode: "staging",
-      version: "0.2.0",
+      version: "0.3.0",
       timestamp: new Date().toISOString(),
       providers: {
-        imageGeneration: "not-configured",
+        imageGeneration: ofoxApiKey ? "ready" : "not-configured",
         taskPlanning: "not-configured",
-        typographyGeneration: typographyAdapterUrl ? "ready" : "not-configured",
+        typographyGeneration: externalTypographyAdapterUrl || ofoxApiKey ? "ready" : "not-configured",
         typographyProvider: "ofox",
+        typographyMode: externalTypographyAdapterUrl ? "external-adapter" : ofoxApiKey ? "built-in" : "not-configured",
       },
     });
   }
