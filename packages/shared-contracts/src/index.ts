@@ -1,5 +1,6 @@
 export type StickerAssetKind =
   | "reference"
+  | "color-reference"
   | "font-reference"
   | "layout-reference"
   | "top"
