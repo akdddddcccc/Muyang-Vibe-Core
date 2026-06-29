@@ -62,6 +62,8 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET` | `/health` | 检查 Core 与 OFOX Adapter 就绪状态 |
+| `POST` | `/v1/live-sticker/background/jobs` | 生成上贴、下贴或侧贴 |
+| `GET` | `/v1/live-sticker/background/jobs/:id` | 查询背景任务 |
 | `POST` | `/v1/live-sticker/typography/jobs` | 创建文字图层任务 |
 | `GET` | `/v1/live-sticker/typography/jobs/:id` | 查询文字图层任务 |
 
@@ -103,7 +105,7 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 
 - `mode: refine` 必须同时有 `text` 和 `references.typography`。
 - 已有文字层提供字形、字体、颜色、纹理；若提供 `references.color`，它覆盖已有文字层的颜色、质感和装饰。
-- OFOX Adapter 必须输出指定 `matte` 的纯白或纯黑实底图片；后续抠图再生成透明 PNG。
+- OFOX 输出指定 `matte` 的纯白或纯黑实底图片；Core 删除与画布边缘连通的底色区域并羽化抗锯齿边缘，最终直接返回透明 PNG。
 
 ## 6. 前端资产与画板约定
 
@@ -130,7 +132,7 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 
 ## 7. OFOX Adapter 责任
 
-Adapter 负责单位网关与 OFOX 的实际请求，Core 只负责归一化业务参数和任务状态。
+Core 内置 Adapter 负责单位网关与 OFOX 的实际请求、归一化业务参数和当前内存任务状态。
 
 - 处理 OFOX 模型、图片格式、多参考图、超时、重试和错误信息。
 - 背景生成的上贴、下贴、侧贴为独立任务；前端可先使用项目中已有素材进行融合。

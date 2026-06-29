@@ -7,8 +7,9 @@
 服务目录：`services/live-sticker-api`
 
 - `GET /health`：前端连通性与 Provider 就绪状态。
+- `POST /v1/live-sticker/background/jobs`：生成单张上贴、下贴或侧贴。
 - `POST /v1/live-sticker/typography/jobs`：创建文字图层任务。
-- `GET /v1/live-sticker/typography/jobs/:id`：查询文字图层任务。
+- `GET /v1/live-sticker/{background|typography}/jobs/:id`：查询任务。
 
 当前 `https://cmuyang23333.top` 上的前端仅用于验收与 Vibe Coding 作品展示；未来它会回到“产出集合页”，再跳转到单位正式工具页面。正式版前端可以与 Core 一起部署到单位官方服务器和官方域名，或保留单独静态托管。两种部署形态均只让浏览器读取 `VITE_CORE_API_BASE_URL`，任何 OFOX、OpenAI、DeepSeek 或单位网关 Key 都不得写入前端、Vercel 环境变量或静态构建产物。
 
@@ -26,7 +27,7 @@
 - `references.typography`：已有文字图层。在微调模式中，它提供字形、字体、颜色和纹理；若同时存在 `references.color`，颜色与质感以 `references.color` 为准。
 - `fontPresetKey`：内置字体预设键，仅在无自定义字体图时补充字形参考。
 
-单位设计工具默认且仅使用 OFOX。前端没有 Provider 选择器；Core 将规范化请求交给 OFOX Adapter。官方 OpenAI Adapter 可作为独立实验或迁移组件保留，但不参与本工具的默认生产路径。Adapter 负责 OFOX 的模型、请求字段、多参考图、超时、重试、错误解析，以及输出纯白/纯黑底稿。
+单位设计工具默认且仅使用 OFOX。前端没有 Provider 选择器；Core 内置 OFOX Adapter 负责模型、请求字段、多参考图、超时、兼容重试、错误解析和文字透明抠图。官方 OpenAI Adapter 可作为独立实验保留，但不参与默认生产路径。
 
 ## 环境变量
 
@@ -48,6 +49,23 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 ```
 
 最小部署可不设外部 Adapter，改为设置 `OFOX_API_KEY`、`OFOX_BASE_URL=https://api.ofox.ai/v1`、`OFOX_IMAGE_MODEL=openai/gpt-image-2` 与 `OFOX_TEXT_LAYER_SIZE=1536x1024`，由 Core 内置 Adapter 直接生成文字层。只有单位独立部署了归一化 Adapter 时才设置 `OFOX_TYPOGRAPHY_ADAPTER_URL`；不得把 OFOX 原始 Base URL 填入该变量。两种路径都未配置时，Core 返回 `503 provider_not_configured`。
+
+前端会把参考图压缩到最长边 1536 px 后作为 `dataUrl` 传给 Core。Nginx 或单位网关必须允许至少 32 MB 请求体，例如 `client_max_body_size 32m;`；Provider Key 仍只存在服务器环境变量中。
+
+## 背景任务
+
+```json
+{
+  "kind": "top",
+  "prompt": "绿色节庆质感，克制的纸张纹理",
+  "reference": { "mimeType": "image/jpeg", "dataUrl": "data:image/jpeg;base64,..." }
+}
+```
+
+- `kind` 为 `top`、`bottom` 或 `side`。
+- 有参考图时优先走 OFOX `/images/edits`；编辑网关不可用时回退 `/images/generations`。
+- 背景优先请求 JPEG；真实返回格式按图片字节判断，避免错误 MIME 进入画板。
+- 前端“依次生成”固定按上贴、下贴、侧贴执行，三个单项也可独立使用。
 
 ## Provider Adapter 契约
 
@@ -124,6 +142,9 @@ curl -fsS https://api.tool.company.example/health
 curl -fsS -X POST https://api.tool.company.example/v1/live-sticker/typography/jobs \
   -H 'Content-Type: application/json' \
   --data '{"text":"NOBOOK · 618 狂欢季","fontPresetKey":"expressive-calligraphy","mode":"create","matte":"white"}'
+curl -fsS -X POST https://api.tool.company.example/v1/live-sticker/background/jobs \
+  -H 'Content-Type: application/json' \
+  --data '{"kind":"top","prompt":"绿色节庆质感"}'
 ```
 
 - `/health` 返回 `status: ok`。

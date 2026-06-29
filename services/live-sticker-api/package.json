@@ -6,5 +6,8 @@
   "scripts": {
     "dev": "node --watch src/server.mjs",
     "start": "node src/server.mjs"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
   }
 }

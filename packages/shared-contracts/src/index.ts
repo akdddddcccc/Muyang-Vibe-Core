@@ -81,6 +81,23 @@ export interface TypographyGenerationJob {
   error?: { code: string; message: string };
 }
 
+export type StickerBackgroundKind = "top" | "bottom" | "side";
+
+export interface BackgroundGenerationRequest {
+  kind: StickerBackgroundKind;
+  prompt?: string;
+  reference?: TypographyReferenceInput;
+}
+
+export interface BackgroundGenerationJob {
+  id: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  createdAt: string;
+  input: BackgroundGenerationRequest;
+  result?: StickerAsset;
+  error?: { code: string; message: string };
+}
+
 export type CompositionLayerKind = "base-image" | "top" | "bottom" | "side" | "typography";
 
 export interface CompositionMask {
@@ -116,11 +133,14 @@ export type ProviderReadiness = "not-configured" | "ready" | "unavailable";
 export interface CoreHealth {
   status: "ok";
   service: "live-sticker-api";
-  mode: "foundation";
+  mode: "foundation" | "staging" | "production";
   version: string;
   timestamp: string;
   providers: {
     imageGeneration: ProviderReadiness;
     taskPlanning: ProviderReadiness;
+    typographyGeneration?: ProviderReadiness;
+    typographyProvider?: "ofox";
+    typographyMode?: "built-in" | "external-adapter" | "not-configured";
   };
 }
