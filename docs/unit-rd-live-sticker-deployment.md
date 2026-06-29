@@ -63,7 +63,7 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 ```
 
 - `kind` 为 `top`、`bottom` 或 `side`。
-- 有参考图时优先走 OFOX `/images/edits`；编辑网关不可用时回退 `/images/generations`。
+- 背景任务必须提供参考图并固定走 OFOX `/images/edits`；当前网关的纯文本背景生成不作为生产回退，避免失败后重复长时间等待。
 - 背景优先请求 JPEG；真实返回格式按图片字节判断，避免错误 MIME 进入画板。
 - 前端“依次生成”固定按上贴、下贴、侧贴执行，三个单项也可独立使用。
 

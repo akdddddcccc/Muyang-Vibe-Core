@@ -100,6 +100,7 @@ function validateBackgroundRequest(payload) {
   const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
   const reference = normalizeReference(payload.reference);
   if (!stickerSpecs[kind]) return { error: "kind 必须是 top、bottom 或 side。" };
+  if (!reference) return { error: "请先上传直播间或色彩参考图。当前 OFOX 背景任务固定使用参考图编辑。" };
   if (prompt.length > 800) return { error: "背景生成要求不能超过 800 个字符。" };
   return { value: { kind, prompt, reference } };
 }
@@ -334,13 +335,7 @@ async function createBackgroundJob(input) {
   }
   job.status = "processing";
   try {
-    let image;
-    try {
-      image = await requestOfoxImage({ jobId: job.id, prompt: backgroundPrompt(input), size: stickerSpecs[input.kind].size, outputFormat: "jpeg", references: input.reference ? [input.reference] : [] });
-    } catch (error) {
-      if (!input.reference) throw error;
-      image = await requestOfoxImage({ jobId: job.id, prompt: `${backgroundPrompt(input)}\n\nThe reference-image gateway was unavailable. Generate from the written art direction while preserving the intended ratio.`, size: stickerSpecs[input.kind].size, outputFormat: "jpeg" });
-    }
+    const image = await requestOfoxImage({ jobId: job.id, prompt: backgroundPrompt(input), size: stickerSpecs[input.kind].size, outputFormat: "jpeg", references: [input.reference] });
     job.result = makeAsset(job.id, input.kind, image);
     job.status = "completed";
   } catch (error) {
