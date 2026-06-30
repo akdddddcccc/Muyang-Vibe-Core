@@ -145,6 +145,7 @@ const externalAdapterUrl = adapterUrl && !isRawOfoxUrl(adapterUrl) ? adapterUrl 
 
 function typographyPrompt(input) {
   const matte = input.matte === "black" ? "pure black (#000000)" : "pure white (#FFFFFF)";
+  const paletteDirective = typographyColorDirective(input.references.color);
   const preset = {
     "elegant-songti": "elegant Chinese Songti/Ming serif, sharp terminals and refined thick-thin contrast",
     "expressive-calligraphy": "expressive Chinese brush calligraphy, energetic pressure and sweeping strokes",
@@ -168,6 +169,7 @@ function typographyPrompt(input) {
     "Generate typography only: no poster scene, product, person, logo, QR code, frame or unrelated decoration.",
     `Render exactly this text and preserve its line breaks:\n${input.text}`,
     ...referenceRules,
+    paletteDirective,
     input.references.color ? "When any glyph/reference conflict appears, prioritize Reference 1 for color and material, prioritize the font reference only for shape, and prioritize the written text for content." : "",
     input.instruction ? `Additional art direction: ${input.instruction}` : "",
     input.matte === "black"
@@ -199,6 +201,90 @@ function imageToDataUrl({ bytes, mimeType }) {
   return `data:${mimeType};base64,${bytes.toString("base64")}`;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function colorStats(red, green, blue) {
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const chroma = max - min;
+  return {
+    luminance: 0.2126 * red + 0.7152 * green + 0.0722 * blue,
+    saturation: max === 0 ? 0 : chroma / max,
+    chroma,
+  };
+}
+
+function colorHex(color) {
+  return `#${[color.red, color.green, color.blue].map((value) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function mixColor(color, target, amount) {
+  return {
+    red: color.red + (target.red - color.red) * amount,
+    green: color.green + (target.green - color.green) * amount,
+    blue: color.blue + (target.blue - color.blue) * amount,
+  };
+}
+
+function extractReferencePalette(reference) {
+  if (!reference?.dataUrl) return undefined;
+  const parsed = parseDataUrl(reference.dataUrl);
+  if (sniffImageMime(parsed.bytes) !== "image/png") return undefined;
+  const png = PNG.sync.read(parsed.bytes);
+  const step = Math.max(1, Math.floor(Math.sqrt((png.width * png.height) / 14000)));
+  let weightSum = 0;
+  let redSum = 0;
+  let greenSum = 0;
+  let blueSum = 0;
+  let best = null;
+  let bestScore = 0;
+  for (let y = 0; y < png.height; y += step) {
+    for (let x = 0; x < png.width; x += step) {
+      const index = (y * png.width + x) * 4;
+      const alpha = png.data[index + 3];
+      if (alpha < 180) continue;
+      const red = png.data[index];
+      const green = png.data[index + 1];
+      const blue = png.data[index + 2];
+      const stats = colorStats(red, green, blue);
+      if (stats.luminance < 18 || stats.luminance > 242 || stats.saturation < 0.12 || stats.chroma < 24) continue;
+      const midtoneBonus = 1 - Math.min(1, Math.abs(stats.luminance - 126) / 126);
+      const score = stats.saturation * 1.8 + (stats.chroma / 255) * 1.1 + midtoneBonus * 0.7;
+      const weight = score * score;
+      redSum += red * weight;
+      greenSum += green * weight;
+      blueSum += blue * weight;
+      weightSum += weight;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { red, green, blue };
+      }
+    }
+  }
+  if (!weightSum && !best) return undefined;
+  const primary = weightSum
+    ? { red: redSum / weightSum, green: greenSum / weightSum, blue: blueSum / weightSum }
+    : best;
+  return {
+    primary: {
+      red: Math.round(primary.red),
+      green: Math.round(primary.green),
+      blue: Math.round(primary.blue),
+    },
+    accent: best ?? primary,
+  };
+}
+
+function typographyColorDirective(reference) {
+  const palette = extractReferencePalette(reference);
+  if (!palette) return "";
+  const primary = colorHex(palette.primary);
+  const accent = colorHex(palette.accent);
+  return `Reference 1 sampled palette for lettering: primary ${primary}, accent ${accent}. The main glyph fill must visibly use this hue family, not grayscale, unless the user explicitly asks for monochrome.`;
+}
+
 function desaturatePngReference(reference) {
   if (!reference?.dataUrl) return reference;
   const parsed = parseDataUrl(reference.dataUrl);
@@ -219,6 +305,81 @@ function sniffImageMime(bytes) {
   if (bytes.subarray(0, 3).toString("hex") === "ffd8ff") return "image/jpeg";
   if (bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
   return "application/octet-stream";
+}
+
+function isTypographyLowSaturation(bytes, matteMode) {
+  const png = PNG.sync.read(bytes);
+  let count = 0;
+  let saturationSum = 0;
+  const step = Math.max(1, Math.floor(Math.sqrt((png.width * png.height) / 60000)));
+  for (let y = 0; y < png.height; y += step) {
+    for (let x = 0; x < png.width; x += step) {
+      const index = (y * png.width + x) * 4;
+      const alpha = png.data[index + 3];
+      if (alpha < 80) continue;
+      const red = png.data[index];
+      const green = png.data[index + 1];
+      const blue = png.data[index + 2];
+      const max = Math.max(red, green, blue);
+      const min = Math.min(red, green, blue);
+      const mattePixel = matteMode === "black" ? max <= 36 && max - min <= 28 : min >= 226 && max - min <= 28;
+      if (mattePixel) continue;
+      const stats = colorStats(red, green, blue);
+      count += 1;
+      saturationSum += stats.saturation;
+    }
+  }
+  return count > 80 && saturationSum / count < 0.11;
+}
+
+function readablePaletteColor(color, matteMode) {
+  const luminance = colorStats(color.red, color.green, color.blue).luminance;
+  if (matteMode === "white" && luminance > 138) {
+    const amount = clamp((luminance - 126) / 170, 0.18, 0.52);
+    return mixColor(color, { red: 0, green: 0, blue: 0 }, amount);
+  }
+  if (matteMode === "black" && luminance < 168) {
+    const amount = clamp((178 - luminance) / 190, 0.2, 0.58);
+    return mixColor(color, { red: 255, green: 255, blue: 255 }, amount);
+  }
+  return color;
+}
+
+function tintLowSaturationTypography(image, colorReference, matteMode) {
+  if (image.mimeType !== "image/png" || !colorReference?.dataUrl) return image;
+  const palette = extractReferencePalette(colorReference);
+  if (!palette || !isTypographyLowSaturation(image.bytes, matteMode)) return image;
+  const target = readablePaletteColor(palette.primary, matteMode);
+  const png = PNG.sync.read(image.bytes);
+  for (let index = 0; index < png.data.length; index += 4) {
+    const alpha = png.data[index + 3];
+    if (alpha < 80) continue;
+    const red = png.data[index];
+    const green = png.data[index + 1];
+    const blue = png.data[index + 2];
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    const mattePixel = matteMode === "black" ? max <= 36 && max - min <= 28 : min >= 226 && max - min <= 28;
+    if (mattePixel) continue;
+    const luminance = colorStats(red, green, blue).luminance;
+    if (matteMode === "black") {
+      const strength = clamp((max - 18) / 202, 0, 1);
+      const highlight = clamp((luminance - 178) / 77, 0, 1);
+      const colored = mixColor(target, { red: 255, green: 255, blue: 255 }, highlight * 0.45);
+      png.data[index] = Math.round(colored.red * strength);
+      png.data[index + 1] = Math.round(colored.green * strength);
+      png.data[index + 2] = Math.round(colored.blue * strength);
+    } else {
+      const strength = clamp((244 - min) / 190, 0, 1);
+      const highlight = clamp((luminance - 168) / 87, 0, 1);
+      const shadow = clamp((72 - luminance) / 72, 0, 1);
+      const colored = mixColor(mixColor(target, { red: 255, green: 255, blue: 255 }, highlight * 0.36), { red: 0, green: 0, blue: 0 }, shadow * 0.18);
+      png.data[index] = Math.round(255 * (1 - strength) + colored.red * strength);
+      png.data[index + 1] = Math.round(255 * (1 - strength) + colored.green * strength);
+      png.data[index + 2] = Math.round(255 * (1 - strength) + colored.blue * strength);
+    }
+  }
+  return { ...image, bytes: PNG.sync.write(png), mimeType: "image/png" };
 }
 
 async function parseImageResponse(response, requestedFormat) {
@@ -380,6 +541,7 @@ async function createTypographyJob(input) {
       image = await requestOfoxImage({ jobId: job.id, prompt: `${typographyPrompt(input)}\n\nCompatibility retry: preserve the first reference's authority and follow the written typography route.`, size: textLayerSize, outputFormat: "png", references: orderedReferences.slice(0, 1) });
     }
     if (image.mimeType !== "image/png") throw new Error("OFOX 文字图层未返回 PNG 实底稿。");
+    image = tintLowSaturationTypography(image, input.references.color, input.matte);
     job.result = makeAsset(job.id, "typography-draft", image);
     job.status = "completed";
   } catch (error) {
