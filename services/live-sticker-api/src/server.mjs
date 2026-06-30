@@ -160,7 +160,7 @@ function typographyPrompt(input) {
       ]
     : [
         input.references.color ? "Reference 1 is the mandatory sole authority for lettering color, material, texture, glow, gradient direction and attached ornaments. Visibly sample its hue family and material treatment; do not invent an unrelated palette." : "Choose a harmonious high-contrast lettering color; dark lettering must never be pure black.",
-        input.references.font ? "The font reference is shape-only: use glyph silhouette, stroke rhythm and local face texture, but ignore all of its colors, background and unrelated words." : `Typography route: ${preset}.`,
+        input.references.font ? "The font reference is pre-desaturated and shape-only: use glyph silhouette, stroke rhythm and local face texture, but never derive color from it." : `Typography route: ${preset}.`,
         input.references.layout ? "The layout reference controls line breaks, hierarchy and relative placement only. Do not copy its colors, background or unrelated words." : "",
       ];
   return [
@@ -193,6 +193,25 @@ function parseDataUrl(dataUrl, index = 0) {
   if (!match) throw new Error("参考图不是有效的 base64 data URL。");
   const extension = match[1] === "image/jpeg" ? "jpg" : match[1] === "image/webp" ? "webp" : "png";
   return { mimeType: match[1], bytes: Buffer.from(match[2], "base64"), fileName: `reference-${index + 1}.${extension}` };
+}
+
+function imageToDataUrl({ bytes, mimeType }) {
+  return `data:${mimeType};base64,${bytes.toString("base64")}`;
+}
+
+function desaturatePngReference(reference) {
+  if (!reference?.dataUrl) return reference;
+  const parsed = parseDataUrl(reference.dataUrl);
+  if (sniffImageMime(parsed.bytes) !== "image/png") return reference;
+  const png = PNG.sync.read(parsed.bytes);
+  for (let index = 0; index < png.data.length; index += 4) {
+    const luminance = Math.round(0.2126 * png.data[index] + 0.7152 * png.data[index + 1] + 0.0722 * png.data[index + 2]);
+    png.data[index] = luminance;
+    png.data[index + 1] = luminance;
+    png.data[index + 2] = luminance;
+  }
+  const bytes = PNG.sync.write(png);
+  return { ...reference, mimeType: "image/png", dataUrl: imageToDataUrl({ bytes, mimeType: "image/png" }) };
 }
 
 function sniffImageMime(bytes) {
@@ -348,9 +367,11 @@ async function createTypographyJob(input) {
       job.result = payload.result;
       return job;
     }
+    const glyphFont = input.references.font ? desaturatePngReference(input.references.font) : undefined;
+    const shapeOnlyTypography = input.references.color && input.references.typography ? desaturatePngReference(input.references.typography) : input.references.typography;
     const orderedReferences = input.mode === "refine"
-      ? [input.references.color, input.references.typography].filter(Boolean)
-      : [input.references.color, input.references.font, input.references.layout].filter(Boolean);
+      ? [input.references.color, shapeOnlyTypography].filter(Boolean)
+      : [input.references.color, glyphFont, input.references.layout].filter(Boolean);
     let image;
     try {
       image = await requestOfoxImage({ jobId: job.id, prompt: typographyPrompt(input), size: textLayerSize, outputFormat: "png", references: orderedReferences });
