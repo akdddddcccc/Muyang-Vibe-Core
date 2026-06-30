@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 
 const host = process.env.CORE_HOST ?? "127.0.0.1";
@@ -15,10 +16,29 @@ const textLayerSize = process.env.OFOX_TEXT_LAYER_SIZE ?? "1536x1024";
 const jobs = new Map();
 const typographyPresetKeys = new Set(["elegant-songti", "expressive-calligraphy", "rounded-cute", "custom-reference"]);
 const stickerSpecs = {
-  top: { label: "上贴", size: "1536x1024", direction: "top banner, landscape" },
-  bottom: { label: "下贴", size: "1536x1024", direction: "bottom banner, landscape" },
-  side: { label: "侧贴", size: "1024x1536", direction: "side banner, portrait" },
+  top: {
+    label: "上贴", size: "1536x1024", direction: "top banner, landscape",
+    instruction: "生成直播间顶部横向贴片。顶部 35% 和左右边缘可有装饰、材质和光效，必须保留参考图的主色、饱和度、线条对比和深浅层次，不能泛白、雾化或褪色；只有底边 25% 可以自然过渡到中性纯白或近白背景。若存在聚焦感，视觉轻微向下汇聚，但不要形成明确主体或海报中心。",
+  },
+  bottom: {
+    label: "下贴", size: "1536x1024", direction: "bottom banner, landscape",
+    instruction: "生成直播间底部横向贴片。下沿 35% 可承载主要装饰、材质和光效，必须保留参考图的主色、饱和度、线条对比和深浅关系，不能泛白、雾化或褪色；只有顶边 25% 可以自然过渡到中性纯白或近白背景。若存在聚焦感，视觉轻微向上汇聚，但不要形成明确主体或促销海报感。",
+  },
+  side: {
+    label: "侧贴", size: "1024x1536", direction: "side banner, portrait",
+    instruction: "生成直播间侧边竖向窄幅贴片。装饰只允许沿一侧外边缘单侧生长，可集中在左上角、上沿或外侧边缘；另一侧与大部分区域必须保持素净、透气。严禁左右对半、镜像对称、中央分割、双栏、门框式构图、两侧同时出现同等装饰。严禁密铺、平铺、网格式重复、连续小图案、壁纸纹样或满版装饰。不要强纵深、中心主体或密集信息排版。",
+  },
 };
+
+const backgroundBasePrompt = `根据当前唯一参考图生成直播间贴片背景底图。
+本次请求只允许使用当前上传的这一张参考图；不存在任何历史参考图、缓存图片或上一轮素材。
+只继承当前参考图的构图气质、色彩关系、材质、光效、边缘装饰密度和留白方式，不复刻其主体、物件、文字或场景。
+颜色锁定：装饰区域必须保持参考图主要颜色的饱和度、明度层次和深色线条对比，不能把彩色装饰整体洗成浅灰、浅粉、浅蓝或接近白色。
+留白只发生在指定过渡边缘，不允许把整张贴片做成低饱和、雾化、褪色、奶白或半透明质感。
+将参考图中的主体转译为抽象背景语言，使画面适合叠加直播间内容。
+整体干净、透气，过渡边缘自然，不抢直播主体。`;
+
+const backgroundNegativePrompt = "禁止生成：参考图中的原始主体或物件、任何其他图片痕迹、文字、logo、二维码、人物、具体商品、价格、优惠券、促销标签、按钮、信息图、海报模板、广告版式、月亮、天体、球体、强中心主体、强边框、深色压迫背景、过密装饰、脏灰底色、整图泛白、整图雾化、低饱和褪色、彩色线条变浅、装饰区域接近白色、平铺纹样、重复贴图。";
 
 function corsOrigin(request) {
   if (allowedOrigins.includes("*")) return "*";
@@ -105,6 +125,12 @@ function validateBackgroundRequest(payload) {
   return { value: { kind, prompt, reference } };
 }
 
+function validateTypographyCutoutRequest(payload) {
+  const image = normalizeReference(payload.image);
+  if (!image) return { error: "请提供需要抠图的 PNG 文字实底稿。" };
+  return { value: { image } };
+}
+
 function isRawOfoxUrl(value) {
   if (!value) return false;
   try {
@@ -152,19 +178,13 @@ function typographyPrompt(input) {
 
 function backgroundPrompt(input) {
   const spec = stickerSpecs[input.kind];
-  const boundary = input.kind === "top"
-    ? "Keep the top, left and right outer edges visually complete. The lower inner edge may transition softly toward the livestream image."
-    : input.kind === "bottom"
-      ? "Keep the bottom, left and right outer edges visually complete. The upper inner edge may transition softly toward the livestream image."
-      : "Keep the whole side sticker visually complete without a baked-in fade.";
   return [
-    `Create one ${spec.direction} decorative livestream overlay asset for a 9:16 livestream room.`,
-    "No typography, words, letters, logos, QR codes, people, products, mockups or screenshots.",
-    "Use the reference image only for palette, materials, texture and decorative language. Do not reproduce its text or scene.",
-    boundary,
-    "Fill the requested canvas and preserve the intended landscape/portrait ratio. Avoid blank white output and avoid square compositions.",
-    input.prompt ? `User art direction: ${input.prompt}` : "Create a polished broadcast-ready decoration with clear visual hierarchy.",
-  ].join("\n\n");
+    backgroundBasePrompt,
+    spec.instruction,
+    input.prompt ? `本轮用户补充要求：${input.prompt}` : "",
+    `输出尺寸与构图：${spec.direction}，${spec.size}。只输出可叠加的背景素材，三类贴片风格统一但构图不能完全重复。`,
+    backgroundNegativePrompt,
+  ].filter(Boolean).join("\n\n");
 }
 
 function parseDataUrl(dataUrl, index = 0) {
@@ -265,6 +285,29 @@ function removeConnectedMatte(bytes, matteMode) {
   return PNG.sync.write(png);
 }
 
+function detectMatteMode(bytes) {
+  const png = PNG.sync.read(bytes);
+  const samples = [];
+  const push = (x, y) => {
+    const index = (y * png.width + x) * 4;
+    samples.push(0.2126 * png.data[index] + 0.7152 * png.data[index + 1] + 0.0722 * png.data[index + 2]);
+  };
+  const stepX = Math.max(1, Math.floor(png.width / 48));
+  const stepY = Math.max(1, Math.floor(png.height / 48));
+  for (let x = 0; x < png.width; x += stepX) { push(x, 0); push(x, png.height - 1); }
+  for (let y = 0; y < png.height; y += stepY) { push(0, y); push(png.width - 1, y); }
+  const average = samples.reduce((sum, value) => sum + value, 0) / Math.max(1, samples.length);
+  return average < 128 ? "black" : "white";
+}
+
+function cutoutTypography(input) {
+  const parsed = parseDataUrl(input.image.dataUrl);
+  if (sniffImageMime(parsed.bytes) !== "image/png") throw new Error("文字抠图只支持 PNG 实底稿。");
+  const matte = detectMatteMode(parsed.bytes);
+  const bytes = removeConnectedMatte(parsed.bytes, matte);
+  return { matte, result: makeAsset(randomUUID(), "typography", { bytes, mimeType: "image/png" }) };
+}
+
 function makeAsset(jobId, kind, image, source = "generated") {
   const extension = image.mimeType === "image/jpeg" ? "jpg" : image.mimeType === "image/webp" ? "webp" : "png";
   return {
@@ -314,9 +357,8 @@ async function createTypographyJob(input) {
       if (orderedReferences.length <= 1) throw error;
       image = await requestOfoxImage({ jobId: job.id, prompt: `${typographyPrompt(input)}\n\nCompatibility retry: preserve the first reference's authority and follow the written typography route.`, size: textLayerSize, outputFormat: "png", references: orderedReferences.slice(0, 1) });
     }
-    if (image.mimeType !== "image/png") throw new Error("OFOX 文字图层未返回 PNG，无法执行透明底抠图。");
-    image.bytes = removeConnectedMatte(image.bytes, input.matte);
-    job.result = makeAsset(job.id, "typography", image);
+    if (image.mimeType !== "image/png") throw new Error("OFOX 文字图层未返回 PNG 实底稿。");
+    job.result = makeAsset(job.id, "typography-draft", image);
     job.status = "completed";
   } catch (error) {
     job.status = "failed";
@@ -350,7 +392,7 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? host}`);
   if (request.method === "GET" && url.pathname === "/health") {
     return sendJson(request, response, 200, {
-      status: "ok", service: "live-sticker-api", mode: "production", version: "0.4.0", timestamp: new Date().toISOString(),
+      status: "ok", service: "live-sticker-api", mode: "production", version: "0.5.0", timestamp: new Date().toISOString(),
       providers: {
         imageGeneration: ofoxApiKey ? "ready" : "not-configured",
         taskPlanning: "not-configured",
@@ -370,6 +412,15 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 400, { error: "invalid_request", message: error instanceof Error && error.message === "request_too_large" ? "请求体超过 32MB，请压缩参考图片。" : "请求不是有效的 JSON。" });
     }
   }
+  if (request.method === "POST" && url.pathname === "/v1/live-sticker/typography/cutout") {
+    try {
+      const validation = validateTypographyCutoutRequest(await readJson(request));
+      if (validation.error) return sendJson(request, response, 400, { error: "invalid_cutout_request", message: validation.error });
+      return sendJson(request, response, 200, cutoutTypography(validation.value));
+    } catch (error) {
+      return sendJson(request, response, 400, { error: "cutout_failed", message: error instanceof Error ? error.message : "文字抠图失败。" });
+    }
+  }
   if (request.method === "POST" && url.pathname === "/v1/live-sticker/background/jobs") {
     try {
       const validation = validateBackgroundRequest(await readJson(request));
@@ -385,7 +436,11 @@ const server = createServer(async (request, response) => {
     const job = jobs.get(jobMatch[1]);
     return job ? sendJson(request, response, 200, job) : sendJson(request, response, 404, { error: "job_not_found", message: "未找到该生成任务。" });
   }
-  return sendJson(request, response, 404, { error: "not_found", message: "Available endpoints: GET /health, POST /v1/live-sticker/background/jobs, POST /v1/live-sticker/typography/jobs." });
+  return sendJson(request, response, 404, { error: "not_found", message: "Available endpoints: GET /health, POST /v1/live-sticker/background/jobs, POST /v1/live-sticker/typography/jobs, POST /v1/live-sticker/typography/cutout." });
 });
 
-server.listen(port, host, () => console.log(`live-sticker-api listening at http://${host}:${port}`));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(port, host, () => console.log(`live-sticker-api listening at http://${host}:${port}`));
+}
+
+export { cutoutTypography, detectMatteMode, removeConnectedMatte };

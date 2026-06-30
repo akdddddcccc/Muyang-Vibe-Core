@@ -9,6 +9,7 @@
 - `GET /health`：前端连通性与 Provider 就绪状态。
 - `POST /v1/live-sticker/background/jobs`：生成单张上贴、下贴或侧贴。
 - `POST /v1/live-sticker/typography/jobs`：创建文字图层任务。
+- `POST /v1/live-sticker/typography/cutout`：将文字实底稿显式转换为透明 PNG。
 - `GET /v1/live-sticker/{background|typography}/jobs/:id`：查询任务。
 
 当前 `https://cmuyang23333.top` 上的前端仅用于验收与 Vibe Coding 作品展示；未来它会回到“产出集合页”，再跳转到单位正式工具页面。正式版前端可以与 Core 一起部署到单位官方服务器和官方域名，或保留单独静态托管。两种部署形态均只让浏览器读取 `VITE_CORE_API_BASE_URL`，任何 OFOX、OpenAI、DeepSeek 或单位网关 Key 都不得写入前端、Vercel 环境变量或静态构建产物。
@@ -20,7 +21,7 @@
 - `mode: create`：新建文字图层，`text` 可为空，但此时必须给 `references.layout`。
 - `mode: refine`：微调已有文字层，必须提供新 `text` 和 `references.typography`。
 - `instruction`：非必填的定制化说明，例如指定某段文字的强调色、层级或视觉取向。
-- `matte`：微调模式的实底输出，固定为 `white` 或 `black`，供后续透明抠图使用。
+- `matte`：文字生成的实底输出，固定为 `white` 或 `black`。生成接口不会自动抠图，用户在产出预览点击“抠出透明底”后才调用 cutout 接口。
 - `references.layout`：带完整排版的文本图片，只作为排版、分行、视觉层级参考。
 - `references.font`：去色字体图，只约束字形、笔画节奏与局部纹理，不控制整体色彩。
 - `references.color`：上贴或用户色彩质感参考，控制整体色彩、材质和小装饰。

@@ -65,6 +65,7 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 | `POST` | `/v1/live-sticker/background/jobs` | 生成上贴、下贴或侧贴 |
 | `GET` | `/v1/live-sticker/background/jobs/:id` | 查询背景任务 |
 | `POST` | `/v1/live-sticker/typography/jobs` | 创建文字图层任务 |
+| `POST` | `/v1/live-sticker/typography/cutout` | 用户确认后把文字实底稿转换为透明 PNG |
 | `GET` | `/v1/live-sticker/typography/jobs/:id` | 查询文字图层任务 |
 
 ### 文字图层：新建模式
@@ -105,7 +106,7 @@ OFOX_TYPOGRAPHY_ADAPTER_TOKEN=
 
 - `mode: refine` 必须同时有 `text` 和 `references.typography`。
 - 已有文字层提供字形、字体、颜色、纹理；若提供 `references.color`，它覆盖已有文字层的颜色、质感和装饰。
-- OFOX 输出指定 `matte` 的纯白或纯黑实底图片；Core 删除与画布边缘连通的底色区域并羽化抗锯齿边缘，最终直接返回透明 PNG。
+- OFOX 首先输出指定 `matte` 的纯白或纯黑实底图片。只有用户在产出预览点击“抠出透明底”时，Core 才删除与画布边缘连通的底色区域并羽化抗锯齿边缘，返回透明 PNG。
 
 ## 6. 前端资产与画板约定
 

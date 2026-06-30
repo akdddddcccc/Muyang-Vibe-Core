@@ -6,6 +6,7 @@ export type StickerAssetKind =
   | "top"
   | "bottom"
   | "side"
+  | "typography-draft"
   | "typography"
   | "base-image"
   | "composition";
