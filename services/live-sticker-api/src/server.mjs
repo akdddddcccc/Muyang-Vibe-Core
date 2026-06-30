@@ -173,8 +173,8 @@ function typographyPrompt(input) {
     input.references.color ? "When any glyph/reference conflict appears, prioritize Reference 1 for color and material, prioritize the font reference only for shape, and prioritize the written text for content." : "",
     input.instruction ? `Additional art direction: ${input.instruction}` : "",
     input.matte === "black"
-      ? "Use light readable lettering. Pure white is allowed. Keep every dark detail attached to the glyphs so the black matte can be removed."
-      : "Use dark readable lettering, but never pure black #000000. Keep every white highlight inside the glyphs so the white matte can be removed.",
+      ? "Use light readable lettering. Pure white is allowed, but never use pure black inside any glyph or decoration because pure black is reserved exclusively for the removable matte."
+      : "Use dark readable lettering, but never pure black #000000. Never use pure white inside any glyph or decoration because pure white is reserved exclusively for the removable matte.",
     "Keep all lettering fully inside the canvas with generous margins. Do not add, translate or rewrite any supplied text.",
   ].filter(Boolean).join("\n\n");
 }
@@ -430,8 +430,6 @@ function removeConnectedMatte(bytes, matteMode) {
   const total = width * height;
   const visited = new Uint8Array(total);
   const queue = new Uint32Array(total);
-  let head = 0;
-  let tail = 0;
   const matches = (index) => {
     const red = data[index];
     const green = data[index + 1];
@@ -440,6 +438,8 @@ function removeConnectedMatte(bytes, matteMode) {
     const min = Math.min(red, green, blue);
     return matteMode === "black" ? max <= 30 && max - min <= 26 : min >= 230 && max - min <= 26;
   };
+  let head = 0;
+  let tail = 0;
   const enqueue = (x, y) => {
     if (x < 0 || y < 0 || x >= width || y >= height) return;
     const pixel = y * width + x;
@@ -455,8 +455,37 @@ function removeConnectedMatte(bytes, matteMode) {
     const y = Math.floor(pixel / width);
     enqueue(x + 1, y); enqueue(x - 1, y); enqueue(x, y + 1); enqueue(x, y - 1);
   }
+
+  // The edge flood fill preserves foreground details, but it cannot reach the
+  // enclosed counters in glyphs such as 日, 目, 田, or 品. Remove enclosed matte
+  // components as holes while retaining tiny matte-colored highlights/noise.
+  const minimumHoleArea = Math.max(6, Math.round(total * 0.000008));
+  for (let seed = 0; seed < total; seed += 1) {
+    if (visited[seed] || !matches(seed * 4)) continue;
+    head = 0;
+    tail = 0;
+    visited[seed] = 2;
+    queue[tail++] = seed;
+    while (head < tail) {
+      const pixel = queue[head++];
+      const x = pixel % width;
+      const y = Math.floor(pixel / width);
+      const enqueueHole = (nextX, nextY) => {
+        if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) return;
+        const next = nextY * width + nextX;
+        if (visited[next] || !matches(next * 4)) return;
+        visited[next] = 2;
+        queue[tail++] = next;
+      };
+      enqueueHole(x + 1, y); enqueueHole(x - 1, y); enqueueHole(x, y + 1); enqueueHole(x, y - 1);
+    }
+    if (tail < minimumHoleArea) {
+      for (let index = 0; index < tail; index += 1) visited[queue[index]] = 3;
+    }
+  }
+
   for (let pixel = 0; pixel < total; pixel += 1) {
-    if (!visited[pixel]) continue;
+    if (visited[pixel] !== 1 && visited[pixel] !== 2) continue;
     const index = pixel * 4;
     const channel = matteMode === "black"
       ? Math.max(data[index], data[index + 1], data[index + 2])

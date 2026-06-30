@@ -10,6 +10,7 @@
   "scripts": {
     "typecheck": "tsc -b",
     "check": "npm run typecheck",
+    "test": "npm --workspace @muyang/live-sticker-api run test",
     "dev:sticker-api": "npm --workspace @muyang/live-sticker-api run dev",
     "start:sticker-api": "npm --workspace @muyang/live-sticker-api run start"
   },
