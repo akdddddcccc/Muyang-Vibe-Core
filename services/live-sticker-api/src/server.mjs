@@ -145,36 +145,41 @@ const externalAdapterUrl = adapterUrl && !isRawOfoxUrl(adapterUrl) ? adapterUrl 
 
 function typographyPrompt(input) {
   const matte = input.matte === "black" ? "pure black (#000000)" : "pure white (#FFFFFF)";
-  const paletteDirective = typographyColorDirective(input.references.color);
   const preset = {
     "elegant-songti": "elegant Chinese Songti/Ming serif, sharp terminals and refined thick-thin contrast",
     "expressive-calligraphy": "expressive Chinese brush calligraphy, energetic pressure and sweeping strokes",
     "rounded-cute": "rounded playful Chinese display lettering, thick soft corners and compact rhythm",
     "custom-reference": "the custom glyph reference's letterform and stroke construction",
   }[input.fontPresetKey];
+  const hasStructureReference = input.mode === "refine" ? Boolean(input.references.typography) : Boolean(input.references.font);
+  const structureReferenceNumber = hasStructureReference ? 1 : undefined;
+  const environmentReferenceNumber = input.references.color ? (hasStructureReference ? 2 : 1) : undefined;
+  const layoutReferenceNumber = input.references.layout
+    ? Number(Boolean(hasStructureReference)) + Number(Boolean(input.references.color)) + 1
+    : undefined;
   const referenceRules = input.mode === "refine"
     ? [
-        "The existing typography reference controls glyph silhouette, stroke structure, spacing and layout.",
-        input.references.color
-          ? "Reference 1 is the mandatory color/material authority and overrides the existing typography's color and texture. The existing typography remains shape-only."
-          : "The existing typography controls glyph shape, color, material and local texture.",
+        `Reference ${structureReferenceNumber} is an existing desaturated typography asset. It defines the design language: glyph silhouette, stroke construction, weight, width, spacing, hierarchy, layout and grayscale material relief.`,
+        "Preserve those structural traits while rendering the new text exactly. Ignore any residual hue and produce a neutral grayscale material master.",
       ]
     : [
-        input.references.color ? "Reference 1 is the mandatory sole authority for lettering color, material, texture, glow, gradient direction and attached ornaments. Visibly sample its hue family and material treatment; do not invent an unrelated palette." : "Choose a harmonious high-contrast lettering color; dark lettering must never be pure black.",
-        input.references.font ? "The font reference is pre-desaturated and shape-only: use glyph silhouette, stroke rhythm and local face texture, but never derive color from it." : `Typography route: ${preset}.`,
-        input.references.layout ? "The layout reference controls line breaks, hierarchy and relative placement only. Do not copy its colors, background or unrelated words." : "",
+        input.references.font ? `Reference ${structureReferenceNumber} is a pre-desaturated font reference. Learn only its design language: glyph silhouette, stroke rhythm, weight, width, corner character, spacing, hierarchy and grayscale surface relief.` : `Typography route: ${preset}.`,
+        input.references.layout ? `Reference ${layoutReferenceNumber} controls line breaks, hierarchy and relative placement only. Do not copy its background or unrelated words.` : "",
       ];
   return [
-    `Create a standalone Chinese livestream typography asset on a strict ${matte} solid background.`,
+    `Create a standalone neutral-grayscale Chinese typography material master on a strict ${matte} solid background.`,
     "Generate typography only: no poster scene, product, person, logo, QR code, frame or unrelated decoration.",
     `Render exactly this text and preserve its line breaks:\n${input.text}`,
     ...referenceRules,
-    paletteDirective,
-    input.references.color ? "When any glyph/reference conflict appears, prioritize Reference 1 for color and material, prioritize the font reference only for shape, and prioritize the written text for content." : "",
+    environmentReferenceNumber ? `Reference ${environmentReferenceNumber} is a desaturated environment reference. Identify only its abstract visual motifs and design semantics, such as ink splashes, geometric forms, petals, ribbons, light trails, particles, electric arcs or similar nonliteral elements.` : "",
+    environmentReferenceNumber ? "Translate at most one or two relevant motif families into restrained grayscale accents attached to or interacting with the glyphs. Preserve the environment's visual rhythm, but never copy concrete products, people, scenery, layout, words, logos or recognizable objects." : "",
+    "Use grayscale luminance to encode material depth: retain deliberate highlights, shadows, bevels, grain and stroke relief, but use no colored pixels. A deterministic renderer will apply the livestream palette and texture after this step.",
+    "Keep the glyph body visually solid and readable. Decorations must remain attached to the lettering and must not become a separate scene.",
+    "Priority order: exact written text first; reference or selected preset for structural design language second; grayscale material depth third; abstract environmental accents fourth.",
     input.instruction ? `Additional art direction: ${input.instruction}` : "",
     input.matte === "black"
-      ? "Use light readable lettering. Pure white is allowed, but never use pure black inside any glyph or decoration because pure black is reserved exclusively for the removable matte."
-      : "Use dark readable lettering, but never pure black #000000. Never use pure white inside any glyph or decoration because pure white is reserved exclusively for the removable matte.",
+      ? "Use light neutral-gray lettering. Pure white highlights are allowed, but never use pure black inside any glyph or decoration because pure black is reserved exclusively for the removable matte."
+      : "Use dark neutral-gray lettering. Pure black shadows are allowed, but never use pure white inside any glyph or decoration because pure white is reserved exclusively for the removable matte.",
     "Keep all lettering fully inside the canvas with generous margins. Do not add, translate or rewrite any supplied text.",
   ].filter(Boolean).join("\n\n");
 }
@@ -277,14 +282,6 @@ function extractReferencePalette(reference) {
   };
 }
 
-function typographyColorDirective(reference) {
-  const palette = extractReferencePalette(reference);
-  if (!palette) return "";
-  const primary = colorHex(palette.primary);
-  const accent = colorHex(palette.accent);
-  return `Reference 1 sampled palette for lettering: primary ${primary}, accent ${accent}. The main glyph fill must visibly use this hue family, not grayscale, unless the user explicitly asks for monochrome.`;
-}
-
 function desaturatePngReference(reference) {
   if (!reference?.dataUrl) return reference;
   const parsed = parseDataUrl(reference.dataUrl);
@@ -307,31 +304,6 @@ function sniffImageMime(bytes) {
   return "application/octet-stream";
 }
 
-function isTypographyLowSaturation(bytes, matteMode) {
-  const png = PNG.sync.read(bytes);
-  let count = 0;
-  let saturationSum = 0;
-  const step = Math.max(1, Math.floor(Math.sqrt((png.width * png.height) / 60000)));
-  for (let y = 0; y < png.height; y += step) {
-    for (let x = 0; x < png.width; x += step) {
-      const index = (y * png.width + x) * 4;
-      const alpha = png.data[index + 3];
-      if (alpha < 80) continue;
-      const red = png.data[index];
-      const green = png.data[index + 1];
-      const blue = png.data[index + 2];
-      const max = Math.max(red, green, blue);
-      const min = Math.min(red, green, blue);
-      const mattePixel = matteMode === "black" ? max <= 36 && max - min <= 28 : min >= 226 && max - min <= 28;
-      if (mattePixel) continue;
-      const stats = colorStats(red, green, blue);
-      count += 1;
-      saturationSum += stats.saturation;
-    }
-  }
-  return count > 80 && saturationSum / count < 0.11;
-}
-
 function readablePaletteColor(color, matteMode) {
   const luminance = colorStats(color.red, color.green, color.blue).luminance;
   if (matteMode === "white" && luminance > 138) {
@@ -345,41 +317,93 @@ function readablePaletteColor(color, matteMode) {
   return color;
 }
 
-function tintLowSaturationTypography(image, colorReference, matteMode) {
-  if (image.mimeType !== "image/png" || !colorReference?.dataUrl) return image;
-  const palette = extractReferencePalette(colorReference);
-  if (!palette || !isTypographyLowSaturation(image.bytes, matteMode)) return image;
-  const target = readablePaletteColor(palette.primary, matteMode);
+function typographyMaterialPalette(reference, matteMode) {
+  const palette = extractReferencePalette(reference);
+  if (!palette) return undefined;
+  const primary = readablePaletteColor(palette.primary, matteMode);
+  let accent = readablePaletteColor(palette.accent, matteMode);
+  const distance = Math.hypot(primary.red - accent.red, primary.green - accent.green, primary.blue - accent.blue);
+  if (distance < 42) {
+    const target = colorStats(primary.red, primary.green, primary.blue).luminance > 138
+      ? { red: 22, green: 22, blue: 22 }
+      : { red: 242, green: 242, blue: 242 };
+    accent = mixColor(primary, target, 0.38);
+  }
+  return { primary, accent };
+}
+
+function applyTypographyMaterial(image, colorReference, matteMode) {
+  if (image.mimeType !== "image/png" || !colorReference?.dataUrl) return { image };
+  const palette = typographyMaterialPalette(colorReference, matteMode);
+  if (!palette) return { image };
+  const referenceImage = parseDataUrl(colorReference.dataUrl);
+  if (sniffImageMime(referenceImage.bytes) !== "image/png") return { image };
+  const reference = PNG.sync.read(referenceImage.bytes);
   const png = PNG.sync.read(image.bytes);
-  for (let index = 0; index < png.data.length; index += 4) {
-    const alpha = png.data[index + 3];
-    if (alpha < 80) continue;
-    const red = png.data[index];
-    const green = png.data[index + 1];
-    const blue = png.data[index + 2];
-    const max = Math.max(red, green, blue);
-    const min = Math.min(red, green, blue);
-    const mattePixel = matteMode === "black" ? max <= 36 && max - min <= 28 : min >= 226 && max - min <= 28;
-    if (mattePixel) continue;
-    const luminance = colorStats(red, green, blue).luminance;
-    if (matteMode === "black") {
-      const strength = clamp((max - 18) / 202, 0, 1);
-      const highlight = clamp((luminance - 178) / 77, 0, 1);
-      const colored = mixColor(target, { red: 255, green: 255, blue: 255 }, highlight * 0.45);
-      png.data[index] = Math.round(colored.red * strength);
-      png.data[index + 1] = Math.round(colored.green * strength);
-      png.data[index + 2] = Math.round(colored.blue * strength);
-    } else {
-      const strength = clamp((244 - min) / 190, 0, 1);
-      const highlight = clamp((luminance - 168) / 87, 0, 1);
-      const shadow = clamp((72 - luminance) / 72, 0, 1);
-      const colored = mixColor(mixColor(target, { red: 255, green: 255, blue: 255 }, highlight * 0.36), { red: 0, green: 0, blue: 0 }, shadow * 0.18);
-      png.data[index] = Math.round(255 * (1 - strength) + colored.red * strength);
-      png.data[index + 1] = Math.round(255 * (1 - strength) + colored.green * strength);
-      png.data[index + 2] = Math.round(255 * (1 - strength) + colored.blue * strength);
+  let referenceLuminance = 0;
+  let referenceSamples = 0;
+  const referenceStep = Math.max(1, Math.floor(Math.sqrt((reference.width * reference.height) / 12_000)));
+  for (let y = 0; y < reference.height; y += referenceStep) {
+    for (let x = 0; x < reference.width; x += referenceStep) {
+      const index = (y * reference.width + x) * 4;
+      if (reference.data[index + 3] < 160) continue;
+      referenceLuminance += colorStats(reference.data[index], reference.data[index + 1], reference.data[index + 2]).luminance;
+      referenceSamples += 1;
     }
   }
-  return { ...image, bytes: PNG.sync.write(png), mimeType: "image/png" };
+  referenceLuminance /= Math.max(1, referenceSamples);
+
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      const index = (y * png.width + x) * 4;
+      const alpha = png.data[index + 3];
+      if (alpha < 80) continue;
+      const red = png.data[index];
+      const green = png.data[index + 1];
+      const blue = png.data[index + 2];
+      const max = Math.max(red, green, blue);
+      const min = Math.min(red, green, blue);
+      const mattePixel = matteMode === "black" ? max <= 30 && max - min <= 26 : min >= 230 && max - min <= 26;
+      if (mattePixel) continue;
+
+      const matteStrength = matteMode === "black"
+        ? clamp((max - 8) / 192, 0, 1)
+        : clamp((246 - min) / 192, 0, 1);
+      const verticalPosition = y / Math.max(1, png.height - 1);
+      const gradientPosition = clamp(verticalPosition * 0.72 + 0.14, 0, 1);
+      let materialColor = mixColor(palette.primary, palette.accent, gradientPosition);
+
+      // Sample a low-frequency version of the environment so texture is
+      // transferred as abstract variation rather than recognizable objects.
+      const textureX = Math.min(reference.width - 1, Math.floor((x / Math.max(1, png.width - 1)) * reference.width / 12) * 12);
+      const textureY = Math.min(reference.height - 1, Math.floor((y / Math.max(1, png.height - 1)) * reference.height / 12) * 12);
+      const textureIndex = (textureY * reference.width + textureX) * 4;
+      const textureColor = {
+        red: reference.data[textureIndex],
+        green: reference.data[textureIndex + 1],
+        blue: reference.data[textureIndex + 2],
+      };
+      const textureStats = colorStats(textureColor.red, textureColor.green, textureColor.blue);
+      const textureAmount = clamp(textureStats.saturation * 0.22 + Math.abs(textureStats.luminance - referenceLuminance) / 255 * 0.16, 0.04, 0.24);
+      materialColor = mixColor(materialColor, textureColor, textureAmount);
+
+      // Preserve the AI-generated grayscale relief as highlights and shadows.
+      const sourceLuminance = colorStats(red, green, blue).luminance / 255;
+      const highlight = clamp((sourceLuminance - 0.58) / 0.42, 0, 1);
+      const shadow = clamp((0.38 - sourceLuminance) / 0.38, 0, 1);
+      materialColor = mixColor(materialColor, { red: 255, green: 255, blue: 255 }, highlight * 0.38);
+      materialColor = mixColor(materialColor, { red: 12, green: 12, blue: 12 }, shadow * 0.32);
+
+      const matteColor = matteMode === "black" ? 0 : 255;
+      png.data[index] = Math.round(matteColor * (1 - matteStrength) + materialColor.red * matteStrength);
+      png.data[index + 1] = Math.round(matteColor * (1 - matteStrength) + materialColor.green * matteStrength);
+      png.data[index + 2] = Math.round(matteColor * (1 - matteStrength) + materialColor.blue * matteStrength);
+    }
+  }
+  return {
+    image: { ...image, bytes: PNG.sync.write(png), mimeType: "image/png" },
+    palette: { primary: colorHex(palette.primary), accent: colorHex(palette.accent) },
+  };
 }
 
 async function parseImageResponse(response, requestedFormat) {
@@ -558,19 +582,32 @@ async function createTypographyJob(input) {
       return job;
     }
     const glyphFont = input.references.font ? desaturatePngReference(input.references.font) : undefined;
-    const shapeOnlyTypography = input.references.color && input.references.typography ? desaturatePngReference(input.references.typography) : input.references.typography;
+    const shapeOnlyTypography = input.references.typography ? desaturatePngReference(input.references.typography) : undefined;
+    const semanticEnvironment = input.references.color ? desaturatePngReference(input.references.color) : undefined;
     const orderedReferences = input.mode === "refine"
-      ? [input.references.color, shapeOnlyTypography].filter(Boolean)
-      : [input.references.color, glyphFont, input.references.layout].filter(Boolean);
+      ? [shapeOnlyTypography, semanticEnvironment].filter(Boolean)
+      : [glyphFont, semanticEnvironment, input.references.layout].filter(Boolean);
     let image;
     try {
       image = await requestOfoxImage({ jobId: job.id, prompt: typographyPrompt(input), size: textLayerSize, outputFormat: "png", references: orderedReferences });
     } catch (error) {
       if (orderedReferences.length <= 1) throw error;
-      image = await requestOfoxImage({ jobId: job.id, prompt: `${typographyPrompt(input)}\n\nCompatibility retry: preserve the first reference's authority and follow the written typography route.`, size: textLayerSize, outputFormat: "png", references: orderedReferences.slice(0, 1) });
+      const fallbackInput = {
+        ...input,
+        references: {
+          ...input.references,
+          color: input.mode === "create" && !input.references.font ? input.references.color : undefined,
+          font: input.mode === "create" ? input.references.font : undefined,
+          layout: undefined,
+        },
+      };
+      image = await requestOfoxImage({ jobId: job.id, prompt: `${typographyPrompt(fallbackInput)}\n\nCompatibility retry: preserve the remaining reference's authority and follow the written typography route.`, size: textLayerSize, outputFormat: "png", references: orderedReferences.slice(0, 1) });
     }
     if (image.mimeType !== "image/png") throw new Error("OFOX 文字图层未返回 PNG 实底稿。");
-    image = tintLowSaturationTypography(image, input.references.color, input.matte);
+    const material = applyTypographyMaterial(image, input.references.color, input.matte);
+    image = material.image;
+    job.renderStrategy = material.palette ? "grayscale-master-with-local-material" : "grayscale-master";
+    if (material.palette) job.appliedPalette = material.palette;
     job.result = makeAsset(job.id, "typography-draft", image);
     job.status = "completed";
   } catch (error) {
@@ -656,4 +693,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   server.listen(port, host, () => console.log(`live-sticker-api listening at http://${host}:${port}`));
 }
 
-export { cutoutTypography, detectMatteMode, removeConnectedMatte };
+export { applyTypographyMaterial, cutoutTypography, detectMatteMode, removeConnectedMatte, typographyPrompt };

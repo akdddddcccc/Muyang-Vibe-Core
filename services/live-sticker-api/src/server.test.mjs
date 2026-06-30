@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PNG } from "pngjs";
-import { removeConnectedMatte } from "./server.mjs";
+import { applyTypographyMaterial, removeConnectedMatte, typographyPrompt } from "./server.mjs";
 
 function makeWhiteMatteFixture() {
   const png = new PNG({ width: 40, height: 40 });
@@ -31,6 +31,21 @@ function makeWhiteMatteFixture() {
   return PNG.sync.write(png);
 }
 
+function makeGrayscaleMasterFixture() {
+  const png = new PNG({ width: 40, height: 40 });
+  png.data.fill(255);
+  for (let y = 8; y < 32; y += 1) {
+    for (let x = 8; x < 32; x += 1) {
+      const index = (y * png.width + x) * 4;
+      const shade = Math.round(52 + (y - 8) / 24 * 112);
+      png.data[index] = shade;
+      png.data[index + 1] = shade;
+      png.data[index + 2] = shade;
+    }
+  }
+  return PNG.sync.write(png);
+}
+
 test("removes edge matte and enclosed glyph counters", () => {
   const result = PNG.sync.read(removeConnectedMatte(makeWhiteMatteFixture(), "white"));
   const alphaAt = (x, y) => result.data[(y * result.width + x) * 4 + 3];
@@ -38,4 +53,39 @@ test("removes edge matte and enclosed glyph counters", () => {
   assert.equal(alphaAt(20, 20), 0);
   assert.equal(alphaAt(11, 11), 255);
   assert.equal(alphaAt(10, 20), 255);
+});
+
+test("typography prompt separates font structure from semantic environment reference", () => {
+  const dataUrl = `data:image/png;base64,${makeWhiteMatteFixture().toString("base64")}`;
+  const reference = { dataUrl, mimeType: "image/png" };
+  const prompt = typographyPrompt({
+    text: "新品首发",
+    fontPresetKey: "custom-reference",
+    mode: "create",
+    matte: "white",
+    references: { color: reference, font: reference },
+  });
+  assert.match(prompt, /pre-desaturated font reference/);
+  assert.match(prompt, /desaturated environment reference/);
+  assert.match(prompt, /ink splashes, geometric forms/);
+  assert.match(prompt, /never copy concrete products/);
+  assert.match(prompt, /Priority order/);
+});
+
+test("local material renderer colors a grayscale master while preserving matte", () => {
+  const referenceBytes = makeWhiteMatteFixture();
+  const reference = { dataUrl: `data:image/png;base64,${referenceBytes.toString("base64")}`, mimeType: "image/png" };
+  const rendered = applyTypographyMaterial(
+    { bytes: makeGrayscaleMasterFixture(), mimeType: "image/png" },
+    reference,
+    "white",
+  );
+  const png = PNG.sync.read(rendered.image.bytes);
+  const pixelAt = (x, y) => [...png.data.subarray((y * png.width + x) * 4, (y * png.width + x) * 4 + 4)];
+  assert.deepEqual(pixelAt(0, 0), [255, 255, 255, 255]);
+  const top = pixelAt(12, 10);
+  const bottom = pixelAt(12, 29);
+  assert.ok(Math.max(...top.slice(0, 3)) - Math.min(...top.slice(0, 3)) > 20);
+  assert.notDeepEqual(top.slice(0, 3), bottom.slice(0, 3));
+  assert.ok(rendered.palette.primary.startsWith("#"));
 });
