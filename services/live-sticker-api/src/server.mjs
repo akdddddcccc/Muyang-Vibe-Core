@@ -155,11 +155,11 @@ function typographyPrompt(input) {
     ? [
         "The existing typography reference controls glyph silhouette, stroke structure, spacing and layout.",
         input.references.color
-          ? "Reference 1 is the optional color/material authority and overrides the existing typography's color and texture. The existing typography remains shape-only."
+          ? "Reference 1 is the mandatory color/material authority and overrides the existing typography's color and texture. The existing typography remains shape-only."
           : "The existing typography controls glyph shape, color, material and local texture.",
       ]
     : [
-        input.references.color ? "Reference 1 is the sole authority for lettering color, material, texture and attached ornaments." : "Choose a harmonious high-contrast lettering color; dark lettering must never be pure black.",
+        input.references.color ? "Reference 1 is the mandatory sole authority for lettering color, material, texture, glow, gradient direction and attached ornaments. Visibly sample its hue family and material treatment; do not invent an unrelated palette." : "Choose a harmonious high-contrast lettering color; dark lettering must never be pure black.",
         input.references.font ? "The font reference is shape-only: use glyph silhouette, stroke rhythm and local face texture, but ignore all of its colors, background and unrelated words." : `Typography route: ${preset}.`,
         input.references.layout ? "The layout reference controls line breaks, hierarchy and relative placement only. Do not copy its colors, background or unrelated words." : "",
       ];
@@ -168,6 +168,7 @@ function typographyPrompt(input) {
     "Generate typography only: no poster scene, product, person, logo, QR code, frame or unrelated decoration.",
     `Render exactly this text and preserve its line breaks:\n${input.text}`,
     ...referenceRules,
+    input.references.color ? "When any glyph/reference conflict appears, prioritize Reference 1 for color and material, prioritize the font reference only for shape, and prioritize the written text for content." : "",
     input.instruction ? `Additional art direction: ${input.instruction}` : "",
     input.matte === "black"
       ? "Use light readable lettering. Pure white is allowed. Keep every dark detail attached to the glyphs so the black matte can be removed."
