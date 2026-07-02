@@ -99,6 +99,7 @@ function validateTypographyRequest(payload) {
   const fontPresetKey = typeof payload.fontPresetKey === "string" ? payload.fontPresetKey : "elegant-songti";
   const mode = payload.mode === "refine" ? "refine" : "create";
   const matte = payload.matte === "black" ? "black" : "white";
+  const studyPoster = payload.studyPoster === true;
   const instruction = typeof payload.instruction === "string" ? payload.instruction.trim() : "";
   const references = {
     color: normalizeReference(payload.references?.color),
@@ -109,10 +110,11 @@ function validateTypographyRequest(payload) {
   if (mode === "create" && !text && !references.layout) return { error: "请填写文本内容，或提供带布局的文本参考图。" };
   if (mode === "refine" && !text) return { error: "微调已有文字图层时请填写新的文本内容。" };
   if (mode === "refine" && !references.typography) return { error: "微调已有文字图层时请提供文字图层参考。" };
+  if (studyPoster && !references.color) return { error: "成品海报学习模式需要上传一张海报或背景参考图。" };
   if (text.length > 240) return { error: "文本内容不能超过 240 个字符。" };
   if (instruction.length > 480) return { error: "定制化要求不能超过 480 个字符。" };
   if (!typographyPresetKeys.has(fontPresetKey)) return { error: "fontPresetKey 无效。" };
-  return { value: { text, fontPresetKey, mode, matte, instruction: instruction || undefined, references } };
+  return { value: { text, fontPresetKey, mode, matte, studyPoster, instruction: instruction || undefined, references } };
 }
 
 function validateBackgroundRequest(payload) {
@@ -157,7 +159,12 @@ function typographyPrompt(input) {
   const layoutReferenceNumber = input.references.layout
     ? Number(Boolean(hasStructureReference)) + Number(Boolean(input.references.color)) + 1
     : undefined;
-  const referenceRules = input.mode === "refine"
+  const referenceRules = input.studyPoster
+    ? [
+        `Reference ${environmentReferenceNumber} is a desaturated finished poster. Study the existing headline typography's stroke character, weight, width, spacing, hierarchy and grayscale relief together with the poster's abstract visual rhythm.`,
+        "Render the new text in that design language without copying the poster's original words, logo, product, people, scene layout or concrete objects.",
+      ]
+    : input.mode === "refine"
     ? [
         `Reference ${structureReferenceNumber} is an existing desaturated typography asset. It defines the design language: glyph silhouette, stroke construction, weight, width, spacing, hierarchy, layout and grayscale material relief.`,
         "Preserve those structural traits while rendering the new text exactly. Ignore any residual hue and produce a neutral grayscale material master.",
@@ -175,7 +182,9 @@ function typographyPrompt(input) {
     environmentReferenceNumber ? "Translate at most one or two relevant motif families into restrained grayscale accents attached to or interacting with the glyphs. Preserve the environment's visual rhythm, but never copy concrete products, people, scenery, layout, words, logos or recognizable objects." : "",
     "Use grayscale luminance to encode material depth: retain deliberate highlights, shadows, bevels, grain and stroke relief, but use no colored pixels. A deterministic renderer will apply the livestream palette and texture after this step.",
     "Keep the glyph body visually solid and readable. Decorations must remain attached to the lettering and must not become a separate scene.",
-    "Priority order: exact written text first; reference or selected preset for structural design language second; grayscale material depth third; abstract environmental accents fourth.",
+    input.studyPoster
+      ? "Priority order: exact written text first; the poster headline's structural design language second; grayscale material depth third; abstract environmental accents fourth."
+      : "Priority order: exact written text first; reference or selected preset for structural design language second; grayscale material depth third; abstract environmental accents fourth.",
     input.instruction ? `Additional art direction: ${input.instruction}` : "",
     input.matte === "black"
       ? "Use light neutral-gray lettering. Pure white highlights are allowed, but never use pure black inside any glyph or decoration because pure black is reserved exclusively for the removable matte."
@@ -341,17 +350,24 @@ function applyTypographyMaterial(image, colorReference, matteMode) {
   const reference = PNG.sync.read(referenceImage.bytes);
   const png = PNG.sync.read(image.bytes);
   let referenceLuminance = 0;
+  let referenceLuminanceSquared = 0;
+  let referenceSaturation = 0;
   let referenceSamples = 0;
   const referenceStep = Math.max(1, Math.floor(Math.sqrt((reference.width * reference.height) / 12_000)));
   for (let y = 0; y < reference.height; y += referenceStep) {
     for (let x = 0; x < reference.width; x += referenceStep) {
       const index = (y * reference.width + x) * 4;
       if (reference.data[index + 3] < 160) continue;
-      referenceLuminance += colorStats(reference.data[index], reference.data[index + 1], reference.data[index + 2]).luminance;
+      const stats = colorStats(reference.data[index], reference.data[index + 1], reference.data[index + 2]);
+      referenceLuminance += stats.luminance;
+      referenceLuminanceSquared += stats.luminance ** 2;
+      referenceSaturation += stats.saturation;
       referenceSamples += 1;
     }
   }
   referenceLuminance /= Math.max(1, referenceSamples);
+  const averageSaturation = referenceSaturation / Math.max(1, referenceSamples);
+  const luminanceVariance = referenceLuminanceSquared / Math.max(1, referenceSamples) - referenceLuminance ** 2;
 
   for (let y = 0; y < png.height; y += 1) {
     for (let x = 0; x < png.width; x += 1) {
@@ -403,6 +419,11 @@ function applyTypographyMaterial(image, colorReference, matteMode) {
   return {
     image: { ...image, bytes: PNG.sync.write(png), mimeType: "image/png" },
     palette: { primary: colorHex(palette.primary), accent: colorHex(palette.accent) },
+    profile: {
+      brightness: Number((referenceLuminance / 255).toFixed(3)),
+      saturation: Number(averageSaturation.toFixed(3)),
+      contrast: Number((Math.sqrt(Math.max(0, luminanceVariance)) / 128).toFixed(3)),
+    },
   };
 }
 
@@ -586,7 +607,9 @@ async function createTypographyJob(input) {
     const semanticEnvironment = input.references.color ? desaturatePngReference(input.references.color) : undefined;
     const orderedReferences = input.mode === "refine"
       ? [shapeOnlyTypography, semanticEnvironment].filter(Boolean)
-      : [glyphFont, semanticEnvironment, input.references.layout].filter(Boolean);
+      : input.studyPoster
+        ? [semanticEnvironment, input.references.layout].filter(Boolean)
+        : [glyphFont, semanticEnvironment, input.references.layout].filter(Boolean);
     let image;
     try {
       image = await requestOfoxImage({ jobId: job.id, prompt: typographyPrompt(input), size: textLayerSize, outputFormat: "png", references: orderedReferences });
@@ -608,6 +631,7 @@ async function createTypographyJob(input) {
     image = material.image;
     job.renderStrategy = material.palette ? "grayscale-master-with-local-material" : "grayscale-master";
     if (material.palette) job.appliedPalette = material.palette;
+    if (material.profile) job.analysisSummary = { source: input.studyPoster ? "finished-poster" : "color-reference", ...material.profile };
     job.result = makeAsset(job.id, "typography-draft", image);
     job.status = "completed";
   } catch (error) {

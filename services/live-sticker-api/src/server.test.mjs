@@ -72,6 +72,21 @@ test("typography prompt separates font structure from semantic environment refer
   assert.match(prompt, /Priority order/);
 });
 
+test("poster study prompt treats one image as typography and environment evidence", () => {
+  const dataUrl = `data:image/png;base64,${makeWhiteMatteFixture().toString("base64")}`;
+  const prompt = typographyPrompt({
+    text: "新品首发",
+    fontPresetKey: "custom-reference",
+    mode: "create",
+    matte: "white",
+    studyPoster: true,
+    references: { color: { dataUrl, mimeType: "image/png" } },
+  });
+  assert.match(prompt, /desaturated finished poster/);
+  assert.match(prompt, /poster headline's structural design language/);
+  assert.match(prompt, /without copying the poster's original words/);
+});
+
 test("local material renderer colors a grayscale master while preserving matte", () => {
   const referenceBytes = makeWhiteMatteFixture();
   const reference = { dataUrl: `data:image/png;base64,${referenceBytes.toString("base64")}`, mimeType: "image/png" };
@@ -88,4 +103,6 @@ test("local material renderer colors a grayscale master while preserving matte",
   assert.ok(Math.max(...top.slice(0, 3)) - Math.min(...top.slice(0, 3)) > 20);
   assert.notDeepEqual(top.slice(0, 3), bottom.slice(0, 3));
   assert.ok(rendered.palette.primary.startsWith("#"));
+  assert.ok(rendered.profile.brightness >= 0 && rendered.profile.brightness <= 1);
+  assert.ok(rendered.profile.saturation >= 0 && rendered.profile.saturation <= 1);
 });
