@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PNG } from "pngjs";
-import { applyTypographyMaterial, removeConnectedMatte, typographyPrompt } from "./server.mjs";
+import { applyPositionAwareTypographyMaterial, applyTypographyMaterial, removeConnectedMatte, typographyPrompt } from "./server.mjs";
 
 function makeWhiteMatteFixture() {
   const png = new PNG({ width: 40, height: 40 });
@@ -41,6 +41,18 @@ function makeGrayscaleMasterFixture() {
       png.data[index] = shade;
       png.data[index + 1] = shade;
       png.data[index + 2] = shade;
+    }
+  }
+  return PNG.sync.write(png);
+}
+
+function makeSplitBackgroundFixture() {
+  const png = new PNG({ width: 80, height: 40 });
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      const index = (y * png.width + x) * 4;
+      const color = x < png.width / 2 ? [236, 212, 82] : [16, 62, 48];
+      png.data[index] = color[0]; png.data[index + 1] = color[1]; png.data[index + 2] = color[2]; png.data[index + 3] = 255;
     }
   }
   return PNG.sync.write(png);
@@ -105,4 +117,23 @@ test("local material renderer colors a grayscale master while preserving matte",
   assert.ok(rendered.palette.primary.startsWith("#"));
   assert.ok(rendered.profile.brightness >= 0 && rendered.profile.brightness <= 1);
   assert.ok(rendered.profile.saturation >= 0 && rendered.profile.saturation <= 1);
+});
+
+test("position-aware renderer adapts different glyph regions to local background", () => {
+  const backgroundBytes = makeSplitBackgroundFixture();
+  const background = { dataUrl: `data:image/png;base64,${backgroundBytes.toString("base64")}`, mimeType: "image/png" };
+  const rendered = applyPositionAwareTypographyMaterial(
+    { bytes: makeGrayscaleMasterFixture(), mimeType: "image/png" },
+    background,
+    "white",
+    { x: 0, y: 0, width: 1, height: 1 },
+  );
+  const png = PNG.sync.read(rendered.image.bytes);
+  const luminanceAt = (x, y) => {
+    const index = (y * png.width + x) * 4;
+    return 0.2126 * png.data[index] + 0.7152 * png.data[index + 1] + 0.0722 * png.data[index + 2];
+  };
+  assert.ok(luminanceAt(12, 20) < luminanceAt(28, 20), "bright background should receive darker type than dark background");
+  assert.ok(rendered.analysis.averageLuminanceDistance > 0.15);
+  assert.equal(rendered.analysis.sampledRegions, 784);
 });

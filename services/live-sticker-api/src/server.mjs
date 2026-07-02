@@ -100,6 +100,7 @@ function validateTypographyRequest(payload) {
   const mode = payload.mode === "refine" ? "refine" : "create";
   const matte = payload.matte === "black" ? "black" : "white";
   const studyPoster = payload.studyPoster === true;
+  const deferMaterial = payload.deferMaterial === true;
   const instruction = typeof payload.instruction === "string" ? payload.instruction.trim() : "";
   const references = {
     color: normalizeReference(payload.references?.color),
@@ -114,7 +115,24 @@ function validateTypographyRequest(payload) {
   if (text.length > 240) return { error: "文本内容不能超过 240 个字符。" };
   if (instruction.length > 480) return { error: "定制化要求不能超过 480 个字符。" };
   if (!typographyPresetKeys.has(fontPresetKey)) return { error: "fontPresetKey 无效。" };
-  return { value: { text, fontPresetKey, mode, matte, studyPoster, instruction: instruction || undefined, references } };
+  return { value: { text, fontPresetKey, mode, matte, studyPoster, deferMaterial, instruction: instruction || undefined, references } };
+}
+
+function validateTypographyMaterialRequest(payload) {
+  const image = normalizeReference(payload.image);
+  const background = normalizeReference(payload.background);
+  const matte = payload.matte === "black" ? "black" : "white";
+  const source = payload.placement && typeof payload.placement === "object" ? payload.placement : {};
+  const placement = {
+    x: Number(source.x), y: Number(source.y), width: Number(source.width), height: Number(source.height),
+  };
+  if (!image) return { error: "请提供灰度文字实底稿。" };
+  if (!background) return { error: "请提供需要适配的背景图。" };
+  if (!Object.values(placement).every(Number.isFinite)) return { error: "文字位置参数无效。" };
+  if (placement.x < 0 || placement.y < 0 || placement.width <= 0 || placement.height <= 0 || placement.x + placement.width > 1 || placement.y + placement.height > 1) {
+    return { error: "文字位置必须完整位于背景范围内。" };
+  }
+  return { value: { image, background, matte, placement } };
 }
 
 function validateBackgroundRequest(payload) {
@@ -427,6 +445,141 @@ function applyTypographyMaterial(image, colorReference, matteMode) {
   };
 }
 
+function buildColorGrid(png, columns = 28, rows = 28) {
+  const red = new Float64Array(columns * rows);
+  const green = new Float64Array(columns * rows);
+  const blue = new Float64Array(columns * rows);
+  const count = new Uint32Array(columns * rows);
+  const step = Math.max(1, Math.floor(Math.sqrt((png.width * png.height) / 90_000)));
+  for (let y = 0; y < png.height; y += step) {
+    for (let x = 0; x < png.width; x += step) {
+      const source = (y * png.width + x) * 4;
+      if (png.data[source + 3] < 100) continue;
+      const column = Math.min(columns - 1, Math.floor(x / png.width * columns));
+      const row = Math.min(rows - 1, Math.floor(y / png.height * rows));
+      const target = row * columns + column;
+      red[target] += png.data[source];
+      green[target] += png.data[source + 1];
+      blue[target] += png.data[source + 2];
+      count[target] += 1;
+    }
+  }
+  const colors = Array.from({ length: columns * rows }, (_, index) => {
+    const divisor = Math.max(1, count[index]);
+    return { red: red[index] / divisor, green: green[index] / divisor, blue: blue[index] / divisor };
+  });
+  return { columns, rows, colors };
+}
+
+function sampleColorGrid(grid, x, y) {
+  const scaledX = clamp(x, 0, 1) * (grid.columns - 1);
+  const scaledY = clamp(y, 0, 1) * (grid.rows - 1);
+  const x0 = Math.floor(scaledX);
+  const y0 = Math.floor(scaledY);
+  const x1 = Math.min(grid.columns - 1, x0 + 1);
+  const y1 = Math.min(grid.rows - 1, y0 + 1);
+  const horizontal = scaledX - x0;
+  const vertical = scaledY - y0;
+  const top = mixColor(grid.colors[y0 * grid.columns + x0], grid.colors[y0 * grid.columns + x1], horizontal);
+  const bottom = mixColor(grid.colors[y1 * grid.columns + x0], grid.colors[y1 * grid.columns + x1], horizontal);
+  return mixColor(top, bottom, vertical);
+}
+
+function adaptColorToLocalBackground(base, background) {
+  const backgroundLuminance = colorStats(background.red, background.green, background.blue).luminance;
+  let result = mixColor(base, background, 0.12);
+  let resultLuminance = colorStats(result.red, result.green, result.blue).luminance;
+  const requiredDistance = 78;
+  if (Math.abs(resultLuminance - backgroundLuminance) < requiredDistance) {
+    const target = backgroundLuminance >= 132
+      ? { red: 10, green: 10, blue: 10 }
+      : { red: 245, green: 245, blue: 245 };
+    for (let step = 0; step < 8 && Math.abs(resultLuminance - backgroundLuminance) < requiredDistance; step += 1) {
+      result = mixColor(result, target, 0.18);
+      resultLuminance = colorStats(result.red, result.green, result.blue).luminance;
+    }
+  }
+  return result;
+}
+
+function applyPositionAwareTypographyMaterial(image, backgroundReference, matteMode, placement) {
+  if (image.mimeType !== "image/png" || !backgroundReference?.dataUrl) throw new Error("位置适配需要 PNG 灰度文字稿和背景图。");
+  const parsedBackground = parseDataUrl(backgroundReference.dataUrl);
+  if (sniffImageMime(parsedBackground.bytes) !== "image/png") throw new Error("位置适配背景必须转换为 PNG。");
+  const background = PNG.sync.read(parsedBackground.bytes);
+  const png = PNG.sync.read(image.bytes);
+  const grid = buildColorGrid(background);
+  const palette = typographyMaterialPalette(backgroundReference, matteMode);
+  if (!palette) throw new Error("无法从背景中提取可用颜色。请换一张色彩信息更完整的参考图。");
+  let contrastSum = 0;
+  let minimumContrast = 255;
+  let coloredPixels = 0;
+
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      const index = (y * png.width + x) * 4;
+      if (png.data[index + 3] < 80) continue;
+      const sourceRed = png.data[index];
+      const sourceGreen = png.data[index + 1];
+      const sourceBlue = png.data[index + 2];
+      const max = Math.max(sourceRed, sourceGreen, sourceBlue);
+      const min = Math.min(sourceRed, sourceGreen, sourceBlue);
+      const mattePixel = matteMode === "black" ? max <= 30 && max - min <= 26 : min >= 230 && max - min <= 26;
+      if (mattePixel) continue;
+
+      const u = placement.x + x / Math.max(1, png.width - 1) * placement.width;
+      const v = placement.y + y / Math.max(1, png.height - 1) * placement.height;
+      const localBackground = sampleColorGrid(grid, u, v);
+      const palettePosition = clamp((u + v) * 0.5, 0, 1);
+      const paletteColor = mixColor(palette.primary, palette.accent, palettePosition);
+      let materialColor = adaptColorToLocalBackground(paletteColor, localBackground);
+
+      const sourceLuminance = colorStats(sourceRed, sourceGreen, sourceBlue).luminance / 255;
+      const highlight = clamp((sourceLuminance - 0.58) / 0.42, 0, 1);
+      const shadow = clamp((0.38 - sourceLuminance) / 0.38, 0, 1);
+      materialColor = mixColor(materialColor, { red: 255, green: 255, blue: 255 }, highlight * 0.24);
+      materialColor = mixColor(materialColor, { red: 10, green: 10, blue: 10 }, shadow * 0.24);
+
+      const localLuminance = colorStats(localBackground.red, localBackground.green, localBackground.blue).luminance;
+      const materialLuminance = colorStats(materialColor.red, materialColor.green, materialColor.blue).luminance;
+      const contrast = Math.abs(materialLuminance - localLuminance);
+      contrastSum += contrast;
+      minimumContrast = Math.min(minimumContrast, contrast);
+      coloredPixels += 1;
+
+      const matteStrength = matteMode === "black"
+        ? clamp((max - 8) / 192, 0, 1)
+        : clamp((246 - min) / 192, 0, 1);
+      const matteColor = matteMode === "black" ? 0 : 255;
+      png.data[index] = Math.round(matteColor * (1 - matteStrength) + materialColor.red * matteStrength);
+      png.data[index + 1] = Math.round(matteColor * (1 - matteStrength) + materialColor.green * matteStrength);
+      png.data[index + 2] = Math.round(matteColor * (1 - matteStrength) + materialColor.blue * matteStrength);
+    }
+  }
+  return {
+    image: { ...image, bytes: PNG.sync.write(png), mimeType: "image/png" },
+    palette: { primary: colorHex(palette.primary), accent: colorHex(palette.accent) },
+    analysis: {
+      averageLuminanceDistance: Number((contrastSum / Math.max(1, coloredPixels) / 255).toFixed(3)),
+      minimumLuminanceDistance: Number((minimumContrast / 255).toFixed(3)),
+      sampledRegions: grid.columns * grid.rows,
+    },
+  };
+}
+
+function materializeTypography(input) {
+  const image = parseDataUrl(input.image.dataUrl);
+  if (sniffImageMime(image.bytes) !== "image/png") throw new Error("灰度文字实底稿必须是 PNG。");
+  const rendered = applyPositionAwareTypographyMaterial({ bytes: image.bytes, mimeType: "image/png" }, input.background, input.matte, input.placement);
+  return {
+    result: makeAsset(randomUUID(), "typography-draft", rendered.image),
+    renderStrategy: "position-aware-local-material",
+    appliedPalette: rendered.palette,
+    placement: input.placement,
+    analysisSummary: rendered.analysis,
+  };
+}
+
 async function parseImageResponse(response, requestedFormat) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error?.message || payload.message || `OFOX returned ${response.status}.`);
@@ -627,9 +780,9 @@ async function createTypographyJob(input) {
       image = await requestOfoxImage({ jobId: job.id, prompt: `${typographyPrompt(fallbackInput)}\n\nCompatibility retry: preserve the remaining reference's authority and follow the written typography route.`, size: textLayerSize, outputFormat: "png", references: orderedReferences.slice(0, 1) });
     }
     if (image.mimeType !== "image/png") throw new Error("OFOX 文字图层未返回 PNG 实底稿。");
-    const material = applyTypographyMaterial(image, input.references.color, input.matte);
+    const material = input.deferMaterial ? { image } : applyTypographyMaterial(image, input.references.color, input.matte);
     image = material.image;
-    job.renderStrategy = material.palette ? "grayscale-master-with-local-material" : "grayscale-master";
+    job.renderStrategy = input.deferMaterial ? "grayscale-master-deferred" : material.palette ? "grayscale-master-with-local-material" : "grayscale-master";
     if (material.palette) job.appliedPalette = material.palette;
     if (material.profile) job.analysisSummary = { source: input.studyPoster ? "finished-poster" : "color-reference", ...material.profile };
     job.result = makeAsset(job.id, "typography-draft", image);
@@ -695,6 +848,15 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 400, { error: "cutout_failed", message: error instanceof Error ? error.message : "文字抠图失败。" });
     }
   }
+  if (request.method === "POST" && url.pathname === "/v1/live-sticker/typography/materialize") {
+    try {
+      const validation = validateTypographyMaterialRequest(await readJson(request));
+      if (validation.error) return sendJson(request, response, 400, { error: "invalid_material_request", message: validation.error });
+      return sendJson(request, response, 200, materializeTypography(validation.value));
+    } catch (error) {
+      return sendJson(request, response, 400, { error: "materialize_failed", message: error instanceof Error ? error.message : "位置配色失败。" });
+    }
+  }
   if (request.method === "POST" && url.pathname === "/v1/live-sticker/background/jobs") {
     try {
       const validation = validateBackgroundRequest(await readJson(request));
@@ -717,4 +879,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   server.listen(port, host, () => console.log(`live-sticker-api listening at http://${host}:${port}`));
 }
 
-export { applyTypographyMaterial, cutoutTypography, detectMatteMode, removeConnectedMatte, typographyPrompt };
+export { applyPositionAwareTypographyMaterial, applyTypographyMaterial, cutoutTypography, detectMatteMode, removeConnectedMatte, typographyPrompt };
