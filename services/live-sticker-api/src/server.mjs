@@ -50,15 +50,17 @@ function corsOrigin(request) {
 }
 
 function sendJson(request, response, statusCode, body) {
+  const payload = JSON.stringify(body);
   response.writeHead(statusCode, {
     "Access-Control-Allow-Origin": corsOrigin(request),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id",
     "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(payload),
     "Cache-Control": "no-store",
     "Vary": "Origin",
   });
-  response.end(JSON.stringify(body));
+  response.end(payload);
 }
 
 function sendOptions(request, response) {
