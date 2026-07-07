@@ -208,12 +208,35 @@ function fallbackTaskSchedule(input) {
 
 function extractJsonObject(text) {
   const trimmed = text.trim();
-  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) return JSON.parse(fenced[1]);
   const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+  if (start >= 0) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) return JSON.parse(trimmed.slice(start, index + 1));
+      }
+    }
+  }
   throw new Error("model_returned_non_json");
 }
 
