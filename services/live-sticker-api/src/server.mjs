@@ -748,6 +748,17 @@ function makeAsset(jobId, kind, image, source = "generated") {
   };
 }
 
+function publicJob(job) {
+  return {
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    createdAt: job.createdAt,
+    result: job.result,
+    error: job.error,
+  };
+}
+
 async function requestExternalAdapter(jobId, input) {
   const response = await fetch(externalAdapterUrl, {
     method: "POST",
@@ -869,7 +880,7 @@ const server = createServer(async (request, response) => {
       const validation = validateTypographyRequest(await readJson(request));
       if (validation.error) return sendJson(request, response, 400, { error: "invalid_typography_request", message: validation.error });
       const job = await createTypographyJob(validation.value);
-      return sendJson(request, response, job.status === "failed" ? 503 : 202, job);
+      return sendJson(request, response, job.status === "failed" ? 503 : 202, publicJob(job));
     } catch (error) {
       return sendJson(request, response, 400, { error: "invalid_request", message: error instanceof Error && error.message === "request_too_large" ? "请求体超过 32MB，请压缩参考图片。" : "请求不是有效的 JSON。" });
     }
@@ -888,7 +899,7 @@ const server = createServer(async (request, response) => {
       const validation = validateBackgroundRequest(await readJson(request));
       if (validation.error) return sendJson(request, response, 400, { error: "invalid_background_request", message: validation.error });
       const job = await createBackgroundJob(validation.value);
-      return sendJson(request, response, job.status === "failed" ? 503 : 202, job);
+      return sendJson(request, response, job.status === "failed" ? 503 : 202, publicJob(job));
     } catch (error) {
       return sendJson(request, response, 400, { error: "invalid_request", message: error instanceof Error && error.message === "request_too_large" ? "请求体超过 32MB，请压缩参考图片。" : "请求不是有效的 JSON。" });
     }
@@ -896,7 +907,7 @@ const server = createServer(async (request, response) => {
   const jobMatch = url.pathname.match(/^\/v1\/live-sticker\/(?:typography|background)\/jobs\/([\w-]+)$/);
   if (request.method === "GET" && jobMatch) {
     const job = jobs.get(jobMatch[1]);
-    return job ? sendJson(request, response, 200, job) : sendJson(request, response, 404, { error: "job_not_found", message: "未找到该生成任务。" });
+    return job ? sendJson(request, response, 200, publicJob(job)) : sendJson(request, response, 404, { error: "job_not_found", message: "未找到该生成任务。" });
   }
   return sendJson(request, response, 404, { error: "not_found", message: "Available endpoints: GET /health, POST /v1/live-sticker/background/jobs, POST /v1/live-sticker/typography/jobs, POST /v1/live-sticker/typography/cutout, POST /v1/task-map/breakdown, POST /v1/task-map/schedule." });
 });
