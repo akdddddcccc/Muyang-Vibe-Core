@@ -13,6 +13,9 @@ const ofoxBaseUrl = (process.env.OFOX_BASE_URL ?? "https://api.ofox.ai/v1").repl
 const ofoxImageModel = process.env.OFOX_IMAGE_MODEL ?? "openai/gpt-image-2";
 const ofoxImageQuality = process.env.OFOX_IMAGE_QUALITY ?? "low";
 const textLayerSize = process.env.OFOX_TEXT_LAYER_SIZE ?? "1536x1024";
+const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
+const deepseekBaseUrl = (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").replace(/\/$/, "");
+const deepseekModel = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
 const jobs = new Map();
 const typographyPresetKeys = new Set(["elegant-songti", "expressive-calligraphy", "rounded-cute", "custom-reference"]);
 const stickerSpecs = {
@@ -129,6 +132,197 @@ function validateTypographyCutoutRequest(payload) {
   const image = normalizeReference(payload.image);
   if (!image) return { error: "请提供需要抠图的 PNG 文字实底稿。" };
   return { value: { image } };
+}
+
+function normalizeTaskNode(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const id = typeof value.id === "string" && value.id.length <= 160 ? value.id : "";
+  const parentId = typeof value.parentId === "string" && value.parentId.length <= 160 ? value.parentId : undefined;
+  const title = typeof value.title === "string" ? value.title.trim() : "";
+  const note = typeof value.note === "string" ? value.note.trim().slice(0, 400) : "";
+  if (!id || !title || title.length > 120) return undefined;
+  return { id, parentId, title, note: note || undefined };
+}
+
+function normalizeTaskNodeList(value, limit = 24) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, limit).map(normalizeTaskNode).filter(Boolean);
+}
+
+function validateTaskBreakdownRequest(payload) {
+  const task = normalizeTaskNode(payload.task);
+  if (!task) return { error: "请提供当前任务节点。" };
+  const ancestors = normalizeTaskNodeList(payload.ancestors, 12);
+  const siblings = normalizeTaskNodeList(payload.siblings, 24);
+  const locale = payload.locale === "en" ? "en" : "zh";
+  return { value: { task, ancestors, siblings, locale } };
+}
+
+function validateTaskScheduleRequest(payload) {
+  const parent = normalizeTaskNode(payload.parent);
+  if (!parent) return { error: "请提供父任务。" };
+  const startDay = Number(payload.parent?.startDay);
+  const endDay = Number(payload.parent?.endDay);
+  if (!Number.isFinite(startDay) || !Number.isFinite(endDay) || endDay <= startDay) return { error: "父任务时间范围无效。" };
+  const children = Array.isArray(payload.children) ? payload.children.slice(0, 24).map((child) => {
+    const node = normalizeTaskNode(child);
+    if (!node) return undefined;
+    return {
+      ...node,
+      startDay: Number.isFinite(Number(child.startDay)) ? Number(child.startDay) : undefined,
+      endDay: Number.isFinite(Number(child.endDay)) ? Number(child.endDay) : undefined,
+      lane: Number.isFinite(Number(child.lane)) ? Number(child.lane) : undefined,
+    };
+  }).filter(Boolean) : [];
+  if (!children.length) return { error: "请提供需要排期的子任务。" };
+  const locale = payload.locale === "en" ? "en" : "zh";
+  return { value: { parent: { ...parent, startDay, endDay }, children, locale } };
+}
+
+function fallbackTaskBreakdown(task) {
+  return [
+    { title: `${task.title}：明确完成标准`, note: "定义可验证的结果、边界和优先级。" },
+    { title: `${task.title}：拆出关键模块`, note: "把当前目标拆成可以独立推进的工作块。" },
+    { title: `${task.title}：建立前后顺序`, note: "标记必须先完成的部分，以及可以并行的部分。" },
+    { title: `${task.title}：检查与收束`, note: "安排复盘节点，处理风险和遗漏。" },
+  ];
+}
+
+function fallbackTaskSchedule(input) {
+  const count = input.children.length;
+  const span = Math.max(count * 4, Math.round(input.parent.endDay - input.parent.startDay + 1));
+  const step = Math.max(3, Math.floor(span / Math.max(1, count)));
+  return input.children.map((child, index) => {
+    const startDay = Math.min(input.parent.endDay - 2, input.parent.startDay + index * step);
+    const endDay = index === count - 1 ? input.parent.endDay : Math.min(input.parent.endDay, startDay + step + 1);
+    return {
+      id: child.id,
+      startDay,
+      endDay: Math.max(startDay + 2, endDay),
+      lane: index === count - 1 && count > 2 ? count - 2 : index,
+      dependsOn: index > 0 ? [input.children[index - 1].id] : [],
+      note: child.note,
+    };
+  });
+}
+
+function extractJsonObject(text) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{")) return JSON.parse(trimmed);
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) return JSON.parse(fenced[1]);
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+  throw new Error("model_returned_non_json");
+}
+
+async function requestDeepSeekJson(messages, temperature = 0.25) {
+  if (!deepseekApiKey) throw new Error("deepseek_not_configured");
+  const response = await fetch(`${deepseekBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${deepseekApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: deepseekModel,
+      temperature,
+      response_format: { type: "json_object" },
+      messages,
+    }),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`DeepSeek request failed with ${response.status}: ${text.slice(0, 240)}`);
+  const payload = JSON.parse(text);
+  return extractJsonObject(payload.choices?.[0]?.message?.content ?? "");
+}
+
+function normalizeBreakdownItems(value, fallbackTask) {
+  const items = Array.isArray(value?.items) ? value.items : [];
+  const normalized = items.slice(0, 6).map((item) => ({
+    title: typeof item.title === "string" ? item.title.trim().slice(0, 80) : "",
+    note: typeof item.note === "string" ? item.note.trim().slice(0, 180) : undefined,
+  })).filter((item) => item.title);
+  return normalized.length >= 3 ? normalized : fallbackTaskBreakdown(fallbackTask);
+}
+
+function normalizeScheduleItems(value, input) {
+  const byChild = new Set(input.children.map((child) => child.id));
+  const items = Array.isArray(value?.items) ? value.items : [];
+  const normalized = items.map((item) => {
+    const id = typeof item.id === "string" ? item.id : "";
+    if (!byChild.has(id)) return undefined;
+    const rawStart = Number(item.startDay);
+    const rawEnd = Number(item.endDay);
+    const startDay = Math.round(Math.max(input.parent.startDay, Math.min(input.parent.endDay - 2, Number.isFinite(rawStart) ? rawStart : input.parent.startDay)));
+    const endDay = Math.round(Math.max(startDay + 2, Math.min(input.parent.endDay, Number.isFinite(rawEnd) ? rawEnd : startDay + 6)));
+    const lane = Math.max(0, Math.round(Number.isFinite(Number(item.lane)) ? Number(item.lane) : 0));
+    const dependsOn = Array.isArray(item.dependsOn) ? item.dependsOn.filter((dependency) => byChild.has(dependency) && dependency !== id).slice(0, 6) : [];
+    return {
+      id,
+      startDay,
+      endDay,
+      lane,
+      dependsOn,
+      note: typeof item.note === "string" ? item.note.trim().slice(0, 180) : undefined,
+    };
+  }).filter(Boolean);
+  return normalized.length === input.children.length ? normalized : fallbackTaskSchedule(input);
+}
+
+async function createTaskBreakdown(input) {
+  if (!deepseekApiKey) return { provider: "local-fallback", items: fallbackTaskBreakdown(input.task) };
+  const language = input.locale === "en" ? "English" : "中文";
+  const payload = await requestDeepSeekJson([
+    {
+      role: "system",
+      content: [
+        "You are a task-structure planner for an infinite nested mind-map product.",
+        "Only split the current node downward by one level.",
+        "Never create dates, deadlines, durations, calendars or Gantt schedules here.",
+        "Return strict JSON with key items: 3 to 6 objects, each with title and optional note.",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        language,
+        currentTask: input.task,
+        ancestors: input.ancestors,
+        siblingContext: input.siblings,
+        rule: "只拆一层；子任务要互相独立、覆盖完整、方便后续继续无限细化。",
+      }),
+    },
+  ]);
+  return { provider: "deepseek", items: normalizeBreakdownItems(payload, input.task) };
+}
+
+async function createTaskSchedule(input) {
+  if (!deepseekApiKey) return { provider: "local-fallback", items: fallbackTaskSchedule(input) };
+  const language = input.locale === "en" ? "English" : "中文";
+  const payload = await requestDeepSeekJson([
+    {
+      role: "system",
+      content: [
+        "You are a Gantt planning assistant.",
+        "Arrange only the direct children inside the parent's numeric day range.",
+        "Use startDay and endDay as relative day numbers, not calendar dates.",
+        "Use lane to express whether sibling tasks share a track. Same lane means a serial relation in that track.",
+        "Use dependsOn for obvious prerequisites. Return strict JSON with key items.",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        language,
+        parent: input.parent,
+        children: input.children,
+        outputShape: { items: [{ id: "child-id", startDay: 0, endDay: 10, lane: 0, dependsOn: [] }] },
+      }),
+    },
+  ]);
+  return { provider: "deepseek", items: normalizeScheduleItems(payload, input) };
 }
 
 function isRawOfoxUrl(value) {
@@ -608,12 +802,32 @@ const server = createServer(async (request, response) => {
       status: "ok", service: "live-sticker-api", mode: "production", version: "0.5.0", timestamp: new Date().toISOString(),
       providers: {
         imageGeneration: ofoxApiKey ? "ready" : "not-configured",
-        taskPlanning: "not-configured",
+        taskPlanning: deepseekApiKey ? "ready" : "not-configured",
         typographyGeneration: externalAdapterUrl || ofoxApiKey ? "ready" : "not-configured",
         typographyProvider: "ofox",
         typographyMode: externalAdapterUrl ? "external-adapter" : ofoxApiKey ? "built-in" : "not-configured",
       },
     });
+  }
+  if (request.method === "POST" && url.pathname === "/v1/task-map/breakdown") {
+    try {
+      const validation = validateTaskBreakdownRequest(await readJson(request, 1_000_000));
+      if (validation.error) return sendJson(request, response, 400, { error: "invalid_task_breakdown_request", message: validation.error });
+      const result = await createTaskBreakdown(validation.value);
+      return sendJson(request, response, 200, result);
+    } catch (error) {
+      return sendJson(request, response, 503, { error: "task_breakdown_failed", message: error instanceof Error ? error.message : "任务拆解失败。" });
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/v1/task-map/schedule") {
+    try {
+      const validation = validateTaskScheduleRequest(await readJson(request, 1_000_000));
+      if (validation.error) return sendJson(request, response, 400, { error: "invalid_task_schedule_request", message: validation.error });
+      const result = await createTaskSchedule(validation.value);
+      return sendJson(request, response, 200, result);
+    } catch (error) {
+      return sendJson(request, response, 503, { error: "task_schedule_failed", message: error instanceof Error ? error.message : "任务时间初排失败。" });
+    }
   }
   if (request.method === "POST" && url.pathname === "/v1/live-sticker/typography/jobs") {
     try {
@@ -649,7 +863,7 @@ const server = createServer(async (request, response) => {
     const job = jobs.get(jobMatch[1]);
     return job ? sendJson(request, response, 200, job) : sendJson(request, response, 404, { error: "job_not_found", message: "未找到该生成任务。" });
   }
-  return sendJson(request, response, 404, { error: "not_found", message: "Available endpoints: GET /health, POST /v1/live-sticker/background/jobs, POST /v1/live-sticker/typography/jobs, POST /v1/live-sticker/typography/cutout." });
+  return sendJson(request, response, 404, { error: "not_found", message: "Available endpoints: GET /health, POST /v1/live-sticker/background/jobs, POST /v1/live-sticker/typography/jobs, POST /v1/live-sticker/typography/cutout, POST /v1/task-map/breakdown, POST /v1/task-map/schedule." });
 });
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
