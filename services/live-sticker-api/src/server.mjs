@@ -758,7 +758,7 @@ async function requestExternalAdapter(jobId, input) {
   return payload;
 }
 
-async function createTypographyJob(input) {
+function createTypographyJob(input) {
   const job = { id: randomUUID(), type: "typography", status: "queued", createdAt: new Date().toISOString(), input };
   jobs.set(job.id, job);
   if (!externalAdapterUrl && !ofoxApiKey) {
@@ -767,12 +767,18 @@ async function createTypographyJob(input) {
     return job;
   }
   job.status = "processing";
+  void processTypographyJob(job);
+  return job;
+}
+
+async function processTypographyJob(job) {
+  const input = job.input;
   try {
     if (externalAdapterUrl) {
       const payload = await requestExternalAdapter(job.id, input);
       job.status = payload.status === "queued" ? "queued" : "completed";
       job.result = payload.result;
-      return job;
+      return;
     }
     const glyphFont = input.references.font ? desaturatePngReference(input.references.font) : undefined;
     const shapeOnlyTypography = input.references.color && input.references.typography ? desaturatePngReference(input.references.typography) : input.references.typography;
@@ -794,10 +800,9 @@ async function createTypographyJob(input) {
     job.status = "failed";
     job.error = { code: "provider_request_failed", message: error instanceof Error ? error.message : "文字图层 Provider 请求失败。" };
   }
-  return job;
 }
 
-async function createBackgroundJob(input) {
+function createBackgroundJob(input) {
   const job = { id: randomUUID(), type: "background", status: "queued", createdAt: new Date().toISOString(), input };
   jobs.set(job.id, job);
   if (!ofoxApiKey) {
@@ -806,6 +811,12 @@ async function createBackgroundJob(input) {
     return job;
   }
   job.status = "processing";
+  void processBackgroundJob(job);
+  return job;
+}
+
+async function processBackgroundJob(job) {
+  const input = job.input;
   try {
     const image = await requestOfoxImage({ jobId: job.id, prompt: backgroundPrompt(input), size: stickerSpecs[input.kind].size, outputFormat: "jpeg", references: [input.reference] });
     job.result = makeAsset(job.id, input.kind, image);
@@ -814,7 +825,6 @@ async function createBackgroundJob(input) {
     job.status = "failed";
     job.error = { code: "provider_request_failed", message: error instanceof Error ? error.message : "背景 Provider 请求失败。" };
   }
-  return job;
 }
 
 const server = createServer(async (request, response) => {
