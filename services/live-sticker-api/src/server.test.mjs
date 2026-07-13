@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PNG } from "pngjs";
-import { extractJsonValue, normalizeBreakdownItems, normalizeScheduleItems, removeConnectedMatte } from "./server.mjs";
+import { enforceScheduleRelationships, extractJsonValue, normalizeBreakdownItems, normalizeScheduleItems, removeConnectedMatte } from "./server.mjs";
 
 function makeWhiteMatteFixture() {
   const png = new PNG({ width: 40, height: 40 });
@@ -73,4 +73,39 @@ test("labels incomplete schedule output for fallback instead of treating it as D
 
   assert.equal(normalized.usedFallback, true);
   assert.equal(normalized.items.length, 2);
+});
+
+test("puts a direct continuation on the prerequisite lane without overlapping dates", () => {
+  const input = {
+    parent: { id: "root", title: "考研", startDay: 0, endDay: 119 },
+    children: [
+      { id: "math", title: "数学复习" },
+      { id: "mock", title: "真题模考" },
+    ],
+  };
+  const scheduled = enforceScheduleRelationships([
+    { id: "math", startDay: 0, endDay: 80, lane: 0, dependsOn: [] },
+    { id: "mock", startDay: 80, endDay: 119, lane: 3, dependsOn: ["math"] },
+  ], input);
+  const math = scheduled.find((item) => item.id === "math");
+  const mock = scheduled.find((item) => item.id === "mock");
+
+  assert.equal(mock.lane, math.lane);
+  assert.ok(math.endDay < mock.startDay);
+});
+
+test("separates independent overlapping tasks that the model assigned to one lane", () => {
+  const input = {
+    parent: { id: "root", title: "项目", startDay: 0, endDay: 30 },
+    children: [
+      { id: "a", title: "任务 A" },
+      { id: "b", title: "任务 B" },
+    ],
+  };
+  const scheduled = enforceScheduleRelationships([
+    { id: "a", startDay: 0, endDay: 12, lane: 0, dependsOn: [] },
+    { id: "b", startDay: 4, endDay: 16, lane: 0, dependsOn: [] },
+  ], input);
+
+  assert.notEqual(scheduled[0].lane, scheduled[1].lane);
 });

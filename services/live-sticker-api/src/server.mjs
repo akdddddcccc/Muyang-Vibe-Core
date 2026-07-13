@@ -304,8 +304,52 @@ function normalizeScheduleItems(value, input) {
     };
   }).filter(Boolean);
   return normalized.length === input.children.length
-    ? { items: normalized, usedFallback: false }
+    ? { items: enforceScheduleRelationships(normalized, input), usedFallback: false }
     : { items: fallbackTaskSchedule(input), usedFallback: true };
+}
+
+function enforceScheduleRelationships(items, input) {
+  const minimumSpan = 2;
+  const scheduled = items.map((item) => ({ ...item, dependsOn: [...(item.dependsOn ?? [])] }));
+  const byId = new Map(scheduled.map((item) => [item.id, item]));
+
+  scheduled.forEach((item) => {
+    const dependencies = item.dependsOn.map((id) => byId.get(id)).filter(Boolean);
+    if (dependencies.length === 1) item.lane = dependencies[0].lane;
+    dependencies.forEach((dependency) => {
+      if (dependency.endDay < item.startDay) return;
+      const shortenedEnd = item.startDay - 1;
+      if (shortenedEnd >= dependency.startDay + minimumSpan) {
+        dependency.endDay = shortenedEnd;
+        return;
+      }
+      const duration = Math.max(minimumSpan, item.endDay - item.startDay);
+      item.startDay = Math.min(input.parent.endDay - minimumSpan, dependency.endDay + 1);
+      item.endDay = Math.min(input.parent.endDay, item.startDay + duration);
+    });
+  });
+
+  let nextLane = Math.max(0, ...scheduled.map((item) => item.lane)) + 1;
+  const placedByLane = new Map();
+  [...scheduled].sort((a, b) => a.startDay - b.startDay || a.endDay - b.endDay).forEach((current) => {
+    const placed = placedByLane.get(current.lane) ?? [];
+    const previous = placed.at(-1);
+    if (previous && current.startDay <= previous.endDay) {
+      if (current.dependsOn.includes(previous.id)) {
+        const duration = Math.max(minimumSpan, current.endDay - current.startDay);
+        current.startDay = Math.min(input.parent.endDay - minimumSpan, previous.endDay + 1);
+        current.endDay = Math.min(input.parent.endDay, current.startDay + duration);
+      } else {
+        current.lane = nextLane;
+        nextLane += 1;
+      }
+    }
+    const targetLane = placedByLane.get(current.lane) ?? [];
+    targetLane.push(current);
+    placedByLane.set(current.lane, targetLane);
+  });
+
+  return scheduled;
 }
 
 async function createTaskBreakdown(input) {
@@ -949,4 +993,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   server.listen(port, host, () => console.log(`live-sticker-api listening at http://${host}:${port}`));
 }
 
-export { cutoutTypography, detectMatteMode, extractJsonValue, normalizeBreakdownItems, normalizeScheduleItems, removeConnectedMatte };
+export { cutoutTypography, detectMatteMode, enforceScheduleRelationships, extractJsonValue, normalizeBreakdownItems, normalizeScheduleItems, removeConnectedMatte };
