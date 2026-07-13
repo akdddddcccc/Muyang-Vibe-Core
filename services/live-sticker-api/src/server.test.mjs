@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PNG } from "pngjs";
-import { removeConnectedMatte } from "./server.mjs";
+import { extractJsonValue, normalizeBreakdownItems, normalizeScheduleItems, removeConnectedMatte } from "./server.mjs";
 
 function makeWhiteMatteFixture() {
   const png = new PNG({ width: 40, height: 40 });
@@ -38,4 +38,39 @@ test("removes edge matte and enclosed glyph counters", () => {
   assert.equal(alphaAt(20, 20), 0);
   assert.equal(alphaAt(11, 11), 255);
   assert.equal(alphaAt(10, 20), 255);
+});
+
+test("accepts a top-level DeepSeek array without replacing valid breakdown items", () => {
+  const modelText = JSON.stringify([
+    { title: "明确分享目标", note: "确定受众和预期结果" },
+    { title: "整理案例", note: "筛选有代表性的实操案例" },
+    { title: "制作演示", note: "完成演示流程与备用方案" },
+  ]);
+  const parsed = extractJsonValue(modelText);
+  const normalized = normalizeBreakdownItems(parsed, { title: "准备分享" });
+
+  assert.equal(normalized.usedFallback, false);
+  assert.deepEqual(normalized.items.map((item) => item.title), ["明确分享目标", "整理案例", "制作演示"]);
+});
+
+test("accepts fenced object responses from DeepSeek-compatible gateways", () => {
+  const parsed = extractJsonValue('```json\n{"items":[{"title":"A"},{"title":"B"},{"title":"C"}]}\n```');
+  const normalized = normalizeBreakdownItems(parsed, { title: "Root" });
+
+  assert.equal(normalized.usedFallback, false);
+  assert.deepEqual(normalized.items.map((item) => item.title), ["A", "B", "C"]);
+});
+
+test("labels incomplete schedule output for fallback instead of treating it as DeepSeek success", () => {
+  const input = {
+    parent: { id: "root", title: "项目", startDay: 0, endDay: 14 },
+    children: [
+      { id: "a", title: "任务 A" },
+      { id: "b", title: "任务 B" },
+    ],
+  };
+  const normalized = normalizeScheduleItems([{ id: "a", startDay: 0, endDay: 4, lane: 0 }], input);
+
+  assert.equal(normalized.usedFallback, true);
+  assert.equal(normalized.items.length, 2);
 });

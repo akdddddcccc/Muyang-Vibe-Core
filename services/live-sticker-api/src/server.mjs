@@ -208,12 +208,20 @@ function fallbackTaskSchedule(input) {
   });
 }
 
-function extractJsonObject(text) {
+function extractJsonValue(text) {
   const trimmed = text.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) return JSON.parse(fenced[1]);
-  const start = trimmed.indexOf("{");
-  if (start >= 0) {
+  if (fenced) return JSON.parse(fenced[1].trim());
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Some compatible gateways prepend prose despite JSON mode. Find the
+    // first complete object or array without discarding a top-level array.
+  }
+  const starts = [...trimmed.matchAll(/[\[{]/g)].map((match) => match.index).filter((index) => index !== undefined);
+  for (const start of starts) {
+    const opening = trimmed[start];
+    const closing = opening === "[" ? "]" : "}";
     let depth = 0;
     let inString = false;
     let escaped = false;
@@ -231,9 +239,9 @@ function extractJsonObject(text) {
       }
       if (char === "\"") {
         inString = true;
-      } else if (char === "{") {
+      } else if (char === opening) {
         depth += 1;
-      } else if (char === "}") {
+      } else if (char === closing) {
         depth -= 1;
         if (depth === 0) return JSON.parse(trimmed.slice(start, index + 1));
       }
@@ -260,21 +268,23 @@ async function requestDeepSeekJson(messages, temperature = 0.25) {
   const text = await response.text();
   if (!response.ok) throw new Error(`DeepSeek request failed with ${response.status}: ${text.slice(0, 240)}`);
   const payload = JSON.parse(text);
-  return extractJsonObject(payload.choices?.[0]?.message?.content ?? "");
+  return extractJsonValue(payload.choices?.[0]?.message?.content ?? "");
 }
 
 function normalizeBreakdownItems(value, fallbackTask) {
-  const items = Array.isArray(value?.items) ? value.items : [];
+  const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : [];
   const normalized = items.slice(0, 6).map((item) => ({
     title: typeof item.title === "string" ? item.title.trim().slice(0, 80) : "",
     note: typeof item.note === "string" ? item.note.trim().slice(0, 180) : undefined,
   })).filter((item) => item.title);
-  return normalized.length >= 3 ? normalized : fallbackTaskBreakdown(fallbackTask);
+  return normalized.length >= 3
+    ? { items: normalized, usedFallback: false }
+    : { items: fallbackTaskBreakdown(fallbackTask), usedFallback: true };
 }
 
 function normalizeScheduleItems(value, input) {
   const byChild = new Set(input.children.map((child) => child.id));
-  const items = Array.isArray(value?.items) ? value.items : [];
+  const items = Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : [];
   const normalized = items.map((item) => {
     const id = typeof item.id === "string" ? item.id : "";
     if (!byChild.has(id)) return undefined;
@@ -293,7 +303,9 @@ function normalizeScheduleItems(value, input) {
       note: typeof item.note === "string" ? item.note.trim().slice(0, 180) : undefined,
     };
   }).filter(Boolean);
-  return normalized.length === input.children.length ? normalized : fallbackTaskSchedule(input);
+  return normalized.length === input.children.length
+    ? { items: normalized, usedFallback: false }
+    : { items: fallbackTaskSchedule(input), usedFallback: true };
 }
 
 async function createTaskBreakdown(input) {
@@ -306,7 +318,12 @@ async function createTaskBreakdown(input) {
         "You are a task-structure planner for an infinite nested mind-map product.",
         "Only split the current node downward by one level.",
         "Never create dates, deadlines, durations, calendars or Gantt schedules here.",
-        "Return strict JSON with key items: 3 to 6 objects, each with title and optional note.",
+        "Treat the current task note as a hard customization constraint, use ancestors to preserve scope, and use siblings to avoid duplicate branches.",
+        "Create concrete deliverables or capability areas specific to this task. Avoid generic phases such as clarify, execute, review, or wrap up unless the task truly requires them.",
+        "Do not repeat the parent title as a prefix in every child title. Each note should describe a useful completion criterion or boundary.",
+        "Together the children should cover the current task without overlap and remain useful for another one-level split later.",
+        "Return exactly one JSON object in this shape: {\"items\":[{\"title\":\"...\",\"note\":\"...\"}] }.",
+        "The items array must contain 3 to 6 objects. Do not return a top-level array or explanatory prose.",
       ].join("\n"),
     },
     {
@@ -320,7 +337,12 @@ async function createTaskBreakdown(input) {
       }),
     },
   ]);
-  return { provider: "deepseek", items: normalizeBreakdownItems(payload, input.task) };
+  const normalized = normalizeBreakdownItems(payload, input.task);
+  return {
+    provider: normalized.usedFallback ? "deepseek-fallback" : "deepseek",
+    items: normalized.items,
+    ...(normalized.usedFallback ? { fallbackReason: "invalid_model_output" } : {}),
+  };
 }
 
 async function createTaskSchedule(input) {
@@ -334,7 +356,11 @@ async function createTaskSchedule(input) {
         "Arrange only the direct children inside the parent's numeric day range.",
         "Use startDay and endDay as relative day numbers, not calendar dates.",
         "Use lane to express whether sibling tasks share a track. Same lane means a serial relation in that track.",
-        "Use dependsOn for obvious prerequisites. Return strict JSON with key items.",
+        "Infer relative effort, prerequisite order and safe parallelism from each title and note instead of dividing time evenly.",
+        "Treat parent and child notes as customization constraints. Respect useful existing startDay, endDay and lane values as hints, but revise them when the task logic requires it.",
+        "Tasks on the same lane must not overlap. Independent tasks may overlap on different lanes. Use dependsOn only for real prerequisites.",
+        "Return every provided child exactly once, keep every task inside the parent range, and allocate visibly different durations when complexity differs.",
+        "Return exactly one JSON object with key items. Do not return a top-level array or explanatory prose.",
       ].join("\n"),
     },
     {
@@ -347,7 +373,12 @@ async function createTaskSchedule(input) {
       }),
     },
   ]);
-  return { provider: "deepseek", items: normalizeScheduleItems(payload, input) };
+  const normalized = normalizeScheduleItems(payload, input);
+  return {
+    provider: normalized.usedFallback ? "deepseek-fallback" : "deepseek",
+    items: normalized.items,
+    ...(normalized.usedFallback ? { fallbackReason: "invalid_model_output" } : {}),
+  };
 }
 
 function isRawOfoxUrl(value) {
@@ -916,4 +947,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   server.listen(port, host, () => console.log(`live-sticker-api listening at http://${host}:${port}`));
 }
 
-export { cutoutTypography, detectMatteMode, removeConnectedMatte };
+export { cutoutTypography, detectMatteMode, extractJsonValue, normalizeBreakdownItems, normalizeScheduleItems, removeConnectedMatte };
